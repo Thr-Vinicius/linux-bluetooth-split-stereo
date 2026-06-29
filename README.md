@@ -23,3 +23,7 @@ Example outputs are available in the `examples/` directory:
 - `ports-example.txt`: example output from `pw-link`
 
 These files show how to identify Bluetooth device names and PipeWire ports without exposing real Bluetooth device IDs.
+
+## Resyncing headphones
+
+If the headphones lose synchronization, reconnecting both Bluetooth devices usually fixes the delay.
