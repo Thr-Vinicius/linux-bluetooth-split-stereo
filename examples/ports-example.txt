@@ -1,0 +1,25 @@
+Example output from:
+
+pw-link -o | grep split_lr
+pw-link -i | grep bluez_output
+
+split_lr:monitor_FL
+split_lr:monitor_FR
+bluez_output.XX_XX_XX_XX_XX_XX.1:playback_FL
+bluez_output.XX_XX_XX_XX_XX_XX.1:playback_FR
+bluez_output.YY_YY_YY_YY_YY_YY.1:playback_FL
+bluez_output.YY_YY_YY_YY_YY_YY.1:playback_FR
+
+Example routing:
+
+Left channel:
+
+split_lr:monitor_FL
+  -> bluez_output.XX_XX_XX_XX_XX_XX.1:playback_FL
+  -> bluez_output.XX_XX_XX_XX_XX_XX.1:playback_FR
+
+Right channel:
+
+split_lr:monitor_FR
+  -> bluez_output.YY_YY_YY_YY_YY_YY.1:playback_FL
+  -> bluez_output.YY_YY_YY_YY_YY_YY.1:playback_FR
