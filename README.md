@@ -15,3 +15,11 @@ System audio
 ├── Left channel  → Bluetooth headphone 1
 └── Right channel → Bluetooth headphone 2
 ```
+## Examples
+
+Example outputs are available in the `examples/` directory:
+
+- `sinks-example.txt`: example output from `pactl list short sinks`
+- `ports-example.txt`: example output from `pw-link`
+
+These files show how to identify Bluetooth device names and PipeWire ports without exposing real Bluetooth device IDs.
