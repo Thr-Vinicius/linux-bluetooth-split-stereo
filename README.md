@@ -57,3 +57,14 @@ bindl = , XF86AudioNext, exec, playerctl next
 bindl = , XF86AudioRaiseVolume, exec, pactl set-sink-volume split_lr +5%
 bindl = , XF86AudioLowerVolume, exec, pactl set-sink-volume split_lr -5%
 bindl = , XF86AudioMute, exec, pactl set-sink-mute split_lr toggle
+```
+
+## Optional: auto start
+
+You can use `auto-split-fones.sh` to wait for both Bluetooth headphones and automatically apply the split stereo routing.
+
+Edit the script and replace:
+
+```bash
+LEFT_DEVICE="bluez_output.YOUR_LEFT_DEVICE.1"
+RIGHT_DEVICE="bluez_output.YOUR_RIGHT_DEVICE.1"
