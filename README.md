@@ -24,6 +24,13 @@ Example outputs are available in the `examples/` directory:
 
 These files show how to identify Bluetooth device names and PipeWire ports without exposing real Bluetooth device IDs.
 
-## Resyncing headphones
+## Resyncing Bluetooth headphones
 
 If the headphones lose synchronization, reconnecting both Bluetooth devices usually fixes the delay.
+
+Edit `resync-fones.sh` and replace the placeholder MAC addresses:
+
+```bash
+LEFT_MAC="XX:XX:XX:XX:XX:XX"
+RIGHT_MAC="YY:YY:YY:YY:YY:YY"
+```
