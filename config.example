@@ -1,0 +1,26 @@
+# PipeWire sink names.
+# Find them with:
+# pactl list short sinks
+
+LEFT_DEVICE="bluez_output.XX_XX_XX_XX_XX_XX.1"
+RIGHT_DEVICE="bluez_output.YY_YY_YY_YY_YY_YY.1"
+
+# Bluetooth MAC addresses used only by resync-fones.sh.
+# Find them with:
+# bluetoothctl devices
+
+LEFT_MAC="XX:XX:XX:XX:XX:XX"
+RIGHT_MAC="YY:YY:YY:YY:YY:YY"
+
+VIRTUAL_SINK="split_lr"
+
+# Keep PHYSICAL_VOLUME and PHYSICAL_BASE equivalent.
+PHYSICAL_VOLUME="90%"
+PHYSICAL_BASE=90
+
+VIRTUAL_VOLUME="40%"
+TOUCH_STEP=5
+
+CHECK_INTERVAL=5
+VOLUME_INTERVAL=0.20
+STABILIZE_TIME=2
