@@ -5,22 +5,40 @@
 LEFT_DEVICE="bluez_output.XX_XX_XX_XX_XX_XX.1"
 RIGHT_DEVICE="bluez_output.YY_YY_YY_YY_YY_YY.1"
 
-# Bluetooth MAC addresses used only by resync-fones.sh.
+# Bluetooth MAC addresses.
 # Find them with:
 # bluetoothctl devices
 
 LEFT_MAC="XX:XX:XX:XX:XX:XX"
 RIGHT_MAC="YY:YY:YY:YY:YY:YY"
 
+# Virtual stereo output.
 VIRTUAL_SINK="split_lr"
 
-# Keep PHYSICAL_VOLUME and PHYSICAL_BASE equivalent.
+# Normal non-Bluetooth output.
+# Leave empty to detect it automatically.
+FALLBACK_SINK=""
+
+# Physical device volume used in split mode.
 PHYSICAL_VOLUME="90%"
 PHYSICAL_BASE=90
 
+# Initial virtual split volume.
 VIRTUAL_VOLUME="40%"
+
+# Virtual volume change for each detected touch command.
 TOUCH_STEP=5
 
-CHECK_INTERVAL=5
+# Applied once when routing to one headphone or the normal output.
+# The watchdog does not permanently lock the volume.
+NON_SPLIT_VOLUME=30
+
+# Watchdog timing.
+CHECK_INTERVAL=1
 VOLUME_INTERVAL=0.20
-STABILIZE_TIME=2
+ACTION_RETRY_DELAY=12
+READY_TIMEOUT=20
+
+# Optional external resync wrapper.
+# Leave empty for standalone operation.
+RESOLVER=""

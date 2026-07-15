@@ -15,21 +15,45 @@ fi
 
 VIRTUAL_SINK="${VIRTUAL_SINK:-split_lr}"
 
-CHECK_INTERVAL="${CHECK_INTERVAL:-5}"
+CHECK_INTERVAL="${CHECK_INTERVAL:-1}"
 VOLUME_INTERVAL="${VOLUME_INTERVAL:-0.20}"
-STABILIZE_TIME="${STABILIZE_TIME:-2}"
+ACTION_RETRY_DELAY="${ACTION_RETRY_DELAY:-12}"
+READY_TIMEOUT="${READY_TIMEOUT:-20}"
 
 PHYSICAL_BASE="${PHYSICAL_BASE:-90}"
 TOUCH_STEP="${TOUCH_STEP:-5}"
 
 SPLIT_SCRIPT="${SPLIT_SCRIPT:-$SCRIPT_DIR/split-fones.sh}"
+RESYNC_SCRIPT="${RESYNC_SCRIPT:-$SCRIPT_DIR/resync-fones.sh}"
 
-if [[ ! -x "$SPLIT_SCRIPT" ]]; then
-    echo "Split script not found or not executable: $SPLIT_SCRIPT"
-    exit 1
-fi
+# Optional wrapper. Leave empty for standalone operation.
+RESOLVER="${RESOLVER:-}"
 
-LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/fones-watchdog-${UID}.lock"
+# Optional normal output. When empty, the watchdog detects one automatically.
+FALLBACK_SINK="${FALLBACK_SINK:-}"
+
+# Volume used with one headphone or the normal computer output.
+NON_SPLIT_VOLUME="${NON_SPLIT_VOLUME:-30}"
+
+# Keep confirming the volume briefly while BlueZ settles.
+
+RESYNC_LOG="${RESYNC_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/linux-bluetooth-split-stereo/fones.log}"
+
+RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
+
+LOCK_FILE="$RUNTIME_DIR/fones-watchdog-${UID}.lock"
+ACTION_FLAG="$RUNTIME_DIR/fones-watchdog-action-${UID}.flag"
+READY_FLAG="$RUNTIME_DIR/fones-watchdog-ready-${UID}.flag"
+
+# Created by michael-resolver or another manual controller.
+REQUEST_FLAG="$RUNTIME_DIR/fones-watchdog-resync-request-${UID}.flag"
+
+# Remembers the normal non-Bluetooth output while the service is running.
+FALLBACK_STATE_FILE="$RUNTIME_DIR/fones-watchdog-fallback-${UID}.state"
+
+# Stores the PipeWire sink indexes of the synchronized connection.
+# It survives a service restart, but is removed when a device disconnects.
+SYNC_STATE_FILE="$RUNTIME_DIR/fones-watchdog-sync-${UID}.state"
 
 exec 9>"$LOCK_FILE"
 
@@ -42,21 +66,79 @@ log() {
     printf '[%(%H:%M:%S)T] %s\n' -1 "$*"
 }
 
-sink_exists() {
-    pactl list short sinks 2>/dev/null |
-        awk -v sink="$1" '
-            $2 == sink { found = 1 }
-            END { exit !found }
-        '
+get_sink_state() {
+    local sinks
+
+    sinks="$(pactl list short sinks 2>/dev/null || true)"
+
+    LEFT_INDEX="$(
+        awk -v target="$LEFT_DEVICE" '
+            $2 == target {
+                print $1
+                exit
+            }
+        ' <<< "$sinks"
+    )"
+
+    RIGHT_INDEX="$(
+        awk -v target="$RIGHT_DEVICE" '
+            $2 == target {
+                print $1
+                exit
+            }
+        ' <<< "$sinks"
+    )"
+
+    VIRTUAL_INDEX="$(
+        awk -v target="$VIRTUAL_SINK" '
+            $2 == target {
+                print $1
+                exit
+            }
+        ' <<< "$sinks"
+    )"
+
+    LEFT_AVAILABLE=0
+    RIGHT_AVAILABLE=0
+    VIRTUAL_AVAILABLE=0
+
+    [[ -n "$LEFT_INDEX" ]] && LEFT_AVAILABLE=1
+    [[ -n "$RIGHT_INDEX" ]] && RIGHT_AVAILABLE=1
+    [[ -n "$VIRTUAL_INDEX" ]] && VIRTUAL_AVAILABLE=1
 }
 
-both_headphones_available() {
-    sink_exists "$LEFT_DEVICE" &&
-        sink_exists "$RIGHT_DEVICE"
+get_current_signature() {
+    get_sink_state
+
+    if (( LEFT_AVAILABLE == 1 &&
+          RIGHT_AVAILABLE == 1 )); then
+        printf '%s:%s\n' "$LEFT_INDEX" "$RIGHT_INDEX"
+        return 0
+    fi
+
+    return 1
 }
 
-virtual_sink_available() {
-    sink_exists "$VIRTUAL_SINK"
+get_saved_signature() {
+    if [[ -r "$SYNC_STATE_FILE" ]]; then
+        cat "$SYNC_STATE_FILE"
+    fi
+}
+
+save_current_signature() {
+    local signature
+
+    signature="$(get_current_signature 2>/dev/null || true)"
+
+    if [[ -z "$signature" ]]; then
+        return 1
+    fi
+
+    printf '%s\n' "$signature" > "$SYNC_STATE_FILE"
+}
+
+clear_sync_state() {
+    rm -f "$SYNC_STATE_FILE"
 }
 
 get_volume_percent() {
@@ -76,6 +158,238 @@ reset_physical_volumes() {
         >/dev/null 2>&1 || true
 }
 
+move_active_streams() {
+    local input_id
+
+    while read -r input_id _; do
+        [[ -n "$input_id" ]] || continue
+
+        pactl move-sink-input \
+            "$input_id" \
+            "$VIRTUAL_SINK" \
+            >/dev/null 2>&1 || true
+    done < <(pactl list short sink-inputs 2>/dev/null)
+}
+
+
+sink_exists() {
+    local target="$1"
+
+    pactl list short sinks 2>/dev/null |
+        awk -v target="$target" '
+            $2 == target {
+                found = 1
+            }
+
+            END {
+                exit(found ? 0 : 1)
+            }
+        '
+}
+
+fallback_is_usable() {
+    local sink="$1"
+
+    [[ -n "$sink" ]] || return 1
+    [[ "$sink" != "$VIRTUAL_SINK" ]] || return 1
+    [[ "$sink" != bluez_output.* ]] || return 1
+
+    sink_exists "$sink"
+}
+
+save_fallback_sink() {
+    local sink="$1"
+
+    fallback_is_usable "$sink" || return 1
+
+    printf '%s\n' "$sink" > "$FALLBACK_STATE_FILE"
+}
+
+get_fallback_sink() {
+    local candidate=""
+    local default_sink=""
+    local sinks=""
+
+    if [[ -n "$FALLBACK_SINK" ]] &&
+       fallback_is_usable "$FALLBACK_SINK"; then
+
+        printf '%s\n' "$FALLBACK_SINK"
+        return 0
+    fi
+
+    if [[ -r "$FALLBACK_STATE_FILE" ]]; then
+        read -r candidate < "$FALLBACK_STATE_FILE"
+
+        if fallback_is_usable "$candidate"; then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    fi
+
+    default_sink="$(
+        pactl get-default-sink 2>/dev/null || true
+    )"
+
+    if fallback_is_usable "$default_sink"; then
+        save_fallback_sink "$default_sink"
+        printf '%s\n' "$default_sink"
+        return 0
+    fi
+
+    sinks="$(pactl list short sinks 2>/dev/null || true)"
+
+    # Prefer the usual built-in analog speaker/headphone output.
+    candidate="$(
+        awk -v virtual="$VIRTUAL_SINK" '
+            $2 != virtual &&
+            $2 !~ /^bluez_output\./ &&
+            $2 ~ /analog-stereo/ {
+                print $2
+                exit
+            }
+        ' <<< "$sinks"
+    )"
+
+    if [[ -z "$candidate" ]]; then
+        candidate="$(
+            awk -v virtual="$VIRTUAL_SINK" '
+                $2 != virtual &&
+                $2 !~ /^bluez_output\./ {
+                    print $2
+                    exit
+                }
+            ' <<< "$sinks"
+        )"
+    fi
+
+    if fallback_is_usable "$candidate"; then
+        save_fallback_sink "$candidate"
+        printf '%s\n' "$candidate"
+        return 0
+    fi
+
+    return 1
+}
+
+route_to_sink() {
+    local target="$1"
+    local message="$2"
+    local current_sink=""
+
+    [[ -n "$target" ]] || return 1
+    sink_exists "$target" || return 1
+
+    current_sink="$(
+        pactl get-default-sink 2>/dev/null || true
+    )"
+
+    if [[ "$current_sink" != "$target" ||
+          "${last_routed_sink:-}" != "$target" ]]; then
+
+        log "$message"
+
+        pactl set-default-sink \
+            "$target" \
+            >/dev/null 2>&1 || return 1
+
+        move_active_streams_to "$target"
+
+        pactl set-sink-volume \
+            "$target" "${NON_SPLIT_VOLUME}%" \
+            >/dev/null 2>&1 || true
+
+        last_routed_sink="$target"
+    fi
+}
+
+move_active_streams_to() {
+    local target="$1"
+    local input_id
+
+    while read -r input_id _; do
+        [[ -n "$input_id" ]] || continue
+
+        pactl move-sink-input \
+            "$input_id" \
+            "$target" \
+            >/dev/null 2>&1 || true
+    done < <(pactl list short sink-inputs 2>/dev/null)
+}
+
+apply_split_only() {
+    mkdir -p "$(dirname "$RESYNC_LOG")"
+
+    if [[ ! -x "$SPLIT_SCRIPT" ]]; then
+        log "Split script not found: $SPLIT_SCRIPT"
+        return 1
+    fi
+
+    "$SPLIT_SCRIPT" >> "$RESYNC_LOG" 2>&1 || return 1
+
+    pactl set-default-sink \
+        "$VIRTUAL_SINK" \
+        >/dev/null 2>&1 || true
+
+    move_active_streams
+    reset_physical_volumes
+}
+
+run_full_resync() {
+    mkdir -p "$(dirname "$RESYNC_LOG")"
+
+    if [[ -n "$RESOLVER" &&
+          -x "$RESOLVER" ]]; then
+        "$RESOLVER"
+        return $?
+    fi
+
+    # Redirected non-interactive execution produced the most reliable
+    # timing between BlueZ, PipeWire and the Bluetooth devices.
+    if [[ -x "$RESYNC_SCRIPT" ]]; then
+        "$RESYNC_SCRIPT" >> "$RESYNC_LOG" 2>&1
+        return $?
+    fi
+
+    log "Resync script not found: $RESYNC_SCRIPT"
+    return 1
+}
+
+confirm_ready() {
+    local maximum_attempts
+    local attempt
+
+    maximum_attempts=$((READY_TIMEOUT * 2))
+
+    for ((attempt = 1; attempt <= maximum_attempts; attempt++)); do
+        get_sink_state
+
+        if (( LEFT_AVAILABLE == 1 &&
+              RIGHT_AVAILABLE == 1 &&
+              VIRTUAL_AVAILABLE == 1 )); then
+            return 0
+        fi
+
+        sleep 0.5
+    done
+
+    return 1
+}
+
+finish_configuration() {
+    pactl set-default-sink \
+        "$VIRTUAL_SINK" \
+        >/dev/null 2>&1 || true
+
+    move_active_streams
+    reset_physical_volumes
+
+    save_current_signature || return 1
+
+    last_routed_sink="$VIRTUAL_SINK"
+
+    : > "$READY_FLAG"
+}
+
 touch_volume_controller() {
     local armed=0
     local left_volume=""
@@ -86,69 +400,86 @@ touch_volume_controller() {
     local source=""
 
     while true; do
-        if both_headphones_available && virtual_sink_available; then
-            if (( armed == 0 )); then
-                reset_physical_volumes
-                armed=1
-                sleep 0.5
-                continue
+        if [[ ! -e "$READY_FLAG" ||
+              -e "$ACTION_FLAG" ]]; then
+
+            armed=0
+            sleep "$VOLUME_INTERVAL"
+            continue
+        fi
+
+        get_sink_state
+
+        if (( LEFT_AVAILABLE == 0 ||
+              RIGHT_AVAILABLE == 0 ||
+              VIRTUAL_AVAILABLE == 0 )); then
+
+            armed=0
+            sleep "$VOLUME_INTERVAL"
+            continue
+        fi
+
+        if (( armed == 0 )); then
+            reset_physical_volumes
+            armed=1
+
+            sleep 0.5
+            continue
+        fi
+
+        left_volume="$(get_volume_percent "$LEFT_DEVICE")"
+        right_volume="$(get_volume_percent "$RIGHT_DEVICE")"
+
+        direction=0
+        source=""
+
+        if [[ -n "$left_volume" &&
+              "$left_volume" -ne "$PHYSICAL_BASE" ]]; then
+
+            source="left"
+
+            if (( left_volume < PHYSICAL_BASE )); then
+                direction=-1
+            else
+                direction=1
             fi
 
-            left_volume="$(get_volume_percent "$LEFT_DEVICE")"
-            right_volume="$(get_volume_percent "$RIGHT_DEVICE")"
+        elif [[ -n "$right_volume" &&
+                "$right_volume" -ne "$PHYSICAL_BASE" ]]; then
 
-            direction=0
-            source=""
+            source="right"
 
-            if [[ -n "$left_volume" &&
-                  "$left_volume" -ne "$PHYSICAL_BASE" ]]; then
-
-                source="left"
-
-                if (( left_volume < PHYSICAL_BASE )); then
-                    direction=-1
-                else
-                    direction=1
-                fi
-
-            elif [[ -n "$right_volume" &&
-                    "$right_volume" -ne "$PHYSICAL_BASE" ]]; then
-
-                source="right"
-
-                if (( right_volume < PHYSICAL_BASE )); then
-                    direction=-1
-                else
-                    direction=1
-                fi
+            if (( right_volume < PHYSICAL_BASE )); then
+                direction=-1
+            else
+                direction=1
             fi
+        fi
 
-            if (( direction != 0 )); then
-                virtual_volume="$(get_volume_percent "$VIRTUAL_SINK")"
+        if (( direction != 0 )); then
+            virtual_volume="$(get_volume_percent "$VIRTUAL_SINK")"
 
-                if [[ -n "$virtual_volume" ]]; then
-                    new_volume=$((virtual_volume + direction * TOUCH_STEP))
+            if [[ -n "$virtual_volume" ]]; then
+                new_volume=$((virtual_volume + direction * TOUCH_STEP))
 
-                    (( new_volume < 0 )) && new_volume=0
-                    (( new_volume > 100 )) && new_volume=100
+                (( new_volume < 0 )) && new_volume=0
+                (( new_volume > 100 )) && new_volume=100
 
+                if (( new_volume != virtual_volume )); then
                     pactl set-sink-volume \
                         "$VIRTUAL_SINK" "${new_volume}%" \
                         >/dev/null 2>&1 || true
-
-                    reset_physical_volumes
 
                     if (( direction > 0 )); then
                         log "Touch on $source headphone: virtual volume increased to ${new_volume}%."
                     else
                         log "Touch on $source headphone: virtual volume reduced to ${new_volume}%."
                     fi
-
-                    sleep 0.25
                 fi
+
+                reset_physical_volumes
+                sleep 0.25
             fi
-        else
-            armed=0
         fi
 
         sleep "$VOLUME_INTERVAL"
@@ -158,6 +489,10 @@ touch_volume_controller() {
 touch_pid=""
 
 cleanup() {
+    # Do not remove SYNC_STATE_FILE here.
+    # It allows a service restart without another Bluetooth reconnection.
+    rm -f "$ACTION_FLAG" "$READY_FLAG"
+
     if [[ -n "${touch_pid:-}" ]]; then
         kill "$touch_pid" 2>/dev/null || true
         wait "$touch_pid" 2>/dev/null || true
@@ -167,61 +502,232 @@ cleanup() {
 trap 'exit 0' INT TERM
 trap cleanup EXIT
 
+rm -f "$ACTION_FLAG" "$READY_FLAG"
+
 touch_volume_controller &
 touch_pid=$!
 
-previously_connected=0
+ready=0
+last_action_attempt=0
+last_presence="unknown"
+last_routed_sink=""
 
-log "Watchdog started."
-log "Waiting for both Bluetooth headphones..."
+log "Connection-aware watchdog started."
+log "New connection: full Bluetooth resync."
+log "Known connection: split routing only."
+log "Waiting for Bluetooth headphones..."
 
 while true; do
-    if both_headphones_available; then
-        default_sink="$(pactl get-default-sink 2>/dev/null || true)"
+    now="$(date +%s)"
+    get_sink_state
 
-        if (( previously_connected == 0 )); then
-            log "Both headphones detected."
-            log "Waiting for Bluetooth to stabilize..."
+    both_available=0
+    any_available=0
 
-            sleep "$STABILIZE_TIME"
-
-            if both_headphones_available; then
-                log "Applying split stereo..."
-
-                if "$SPLIT_SCRIPT"; then
-                    reset_physical_volumes
-                    log "Split stereo applied."
-                    previously_connected=1
-                else
-                    log "Failed to apply split stereo. Retrying later."
-                    previously_connected=0
-                fi
-            fi
-
-        elif ! virtual_sink_available; then
-            log "Virtual sink disappeared. Recreating it..."
-
-            if "$SPLIT_SCRIPT"; then
-                reset_physical_volumes
-                log "Virtual sink restored."
-            else
-                log "Failed to restore virtual sink."
-                previously_connected=0
-            fi
-
-        elif [[ "$default_sink" != "$VIRTUAL_SINK" ]]; then
-            log "Default sink changed. Restoring $VIRTUAL_SINK..."
-            pactl set-default-sink "$VIRTUAL_SINK" 2>/dev/null || true
-        fi
-
-    else
-        if (( previously_connected == 1 )); then
-            log "One or both headphones were disconnected."
-            log "Waiting for reconnection..."
-        fi
-
-        previously_connected=0
+    if (( LEFT_AVAILABLE == 1 &&
+          RIGHT_AVAILABLE == 1 )); then
+        both_available=1
     fi
+
+    if (( LEFT_AVAILABLE == 1 ||
+          RIGHT_AVAILABLE == 1 )); then
+        any_available=1
+    fi
+
+    if (( both_available == 0 )); then
+        rm -f "$READY_FLAG"
+
+        if [[ "$last_presence" == "both" ]]; then
+            if (( any_available == 1 )); then
+                log "One headphone was disconnected."
+            else
+                log "Both headphones were disconnected."
+            fi
+
+            log "The next complete connection will receive a full resync."
+        fi
+
+        ready=0
+        clear_sync_state
+
+        if (( LEFT_AVAILABLE == 1 &&
+              RIGHT_AVAILABLE == 0 )); then
+
+            route_to_sink                 "$LEFT_DEVICE"                 "Only the left headphone is connected. Using it directly."                 || true
+
+            last_presence="partial"
+
+        elif (( RIGHT_AVAILABLE == 1 &&
+                LEFT_AVAILABLE == 0 )); then
+
+            route_to_sink                 "$RIGHT_DEVICE"                 "Only the right headphone is connected. Using it directly."                 || true
+
+            last_presence="partial"
+
+        else
+            fallback_sink="$(
+                get_fallback_sink 2>/dev/null || true
+            )"
+
+            if [[ -n "$fallback_sink" ]]; then
+                route_to_sink                     "$fallback_sink"                     "No Bluetooth headphones connected. Restoring normal output."                     || true
+            elif [[ "$last_routed_sink" != "__no_fallback__" ]]; then
+                log "No normal audio output was found."
+                last_routed_sink="__no_fallback__"
+            fi
+
+            last_presence="none"
+        fi
+
+        sleep "$CHECK_INTERVAL"
+        continue
+    fi
+
+    if [[ -e "$REQUEST_FLAG" ]]; then
+        log "Manual resync request received."
+        log "Performing one full resync..."
+
+        rm -f "$REQUEST_FLAG"
+
+        : > "$ACTION_FLAG"
+        rm -f "$READY_FLAG"
+
+        last_action_attempt="$now"
+        action_ok=0
+
+        if run_full_resync; then
+            action_ok=1
+        fi
+
+        if (( action_ok == 1 )) &&
+           confirm_ready &&
+           finish_configuration; then
+
+            ready=1
+            last_presence="both"
+
+            log "Manual resync completed."
+            log "Headphones synchronized and virtual output active."
+        else
+            ready=0
+            clear_sync_state
+
+            log "Manual resync did not complete successfully."
+        fi
+
+        rm -f "$ACTION_FLAG"
+
+        sleep "$CHECK_INTERVAL"
+        continue
+    fi
+
+    current_signature="${LEFT_INDEX}:${RIGHT_INDEX}"
+    saved_signature="$(get_saved_signature 2>/dev/null || true)"
+
+    if [[ "$last_presence" != "both" ]]; then
+        log "Both headphones detected."
+    fi
+
+    last_presence="both"
+
+    if (( ready == 1 )); then
+        if [[ -z "$saved_signature" ||
+              "$saved_signature" != "$current_signature" ]]; then
+
+            log "A new PipeWire device pair was detected."
+            log "Scheduling a full resync..."
+
+            rm -f "$READY_FLAG"
+            clear_sync_state
+            ready=0
+
+            sleep "$CHECK_INTERVAL"
+            continue
+        fi
+
+        if (( VIRTUAL_AVAILABLE == 0 )); then
+            if (( now - last_action_attempt >= ACTION_RETRY_DELAY )); then
+                last_action_attempt="$now"
+
+                log "Virtual output disappeared. Restoring split routing..."
+
+                : > "$ACTION_FLAG"
+                rm -f "$READY_FLAG"
+
+                if apply_split_only &&
+                   confirm_ready &&
+                   finish_configuration; then
+
+                    log "Virtual output restored."
+                else
+                    log "Split restoration failed."
+                    clear_sync_state
+                    ready=0
+                fi
+
+                rm -f "$ACTION_FLAG"
+            fi
+        else
+            default_sink="$(
+                pactl get-default-sink 2>/dev/null || true
+            )"
+
+            if [[ "$default_sink" != "$VIRTUAL_SINK" ]]; then
+                log "Restoring $VIRTUAL_SINK as the default output..."
+
+                pactl set-default-sink \
+                    "$VIRTUAL_SINK" \
+                    >/dev/null 2>&1 || true
+
+                move_active_streams
+            fi
+        fi
+
+        sleep "$CHECK_INTERVAL"
+        continue
+    fi
+
+    if (( now - last_action_attempt < ACTION_RETRY_DELAY )); then
+        sleep "$CHECK_INTERVAL"
+        continue
+    fi
+
+    last_action_attempt="$now"
+
+    : > "$ACTION_FLAG"
+    rm -f "$READY_FLAG"
+
+    action_ok=0
+
+    if [[ -n "$saved_signature" &&
+          "$saved_signature" == "$current_signature" ]]; then
+
+        log "Known synchronized connection detected."
+        log "Applying split routing without reconnecting..."
+
+        apply_split_only && action_ok=1
+    else
+        log "New Bluetooth connection detected."
+        log "Performing one full resync..."
+
+        run_full_resync && action_ok=1
+    fi
+
+    if (( action_ok == 1 )) &&
+       confirm_ready &&
+       finish_configuration; then
+
+        ready=1
+        log "Headphones synchronized and virtual output active."
+    else
+        ready=0
+        clear_sync_state
+
+        log "Configuration did not complete successfully."
+        log "A new attempt will be made later."
+    fi
+
+    rm -f "$ACTION_FLAG"
 
     sleep "$CHECK_INTERVAL"
 done
