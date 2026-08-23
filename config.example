@@ -26,18 +26,20 @@ PHYSICAL_BASE=90
 # Initial virtual split volume.
 VIRTUAL_VOLUME="40%"
 
-# Virtual volume change for each detected touch command.
-TOUCH_STEP=5
-
 # Applied once when routing to one headphone or the normal output.
 # The watchdog does not permanently lock the volume.
 NON_SPLIT_VOLUME=30
 
 # Watchdog timing.
 CHECK_INTERVAL=1
-VOLUME_INTERVAL=0.20
+IDLE_CHECK_INTERVAL=3
 ACTION_RETRY_DELAY=12
 READY_TIMEOUT=20
+
+# Bluetooth reconnection timing used by resync-fones.sh.
+CONNECT_TIMEOUT=25
+CONNECT_RETRY_INTERVAL=3
+POST_CONNECT_SETTLE=2
 
 # Optional external resync wrapper.
 # Leave empty for standalone operation.

@@ -21,7 +21,6 @@ System audio
 - Restores the normal computer output when both headphones disconnect
 - Moves active audio streams to the selected output
 - Keeps the physical devices at a fixed volume in split mode
-- Uses either headphone's touch control for the virtual volume
 - Supports manual resynchronization requests
 - Runs as a persistent systemd user service
 
@@ -162,12 +161,6 @@ The initial virtual output volume:
 
 ```bash
 VIRTUAL_VOLUME="40%"
-```
-
-The virtual volume adjustment for each detected touch command:
-
-```bash
-TOUCH_STEP=5
 ```
 
 The volume applied once when only one headphone or no Bluetooth headphones are connected:

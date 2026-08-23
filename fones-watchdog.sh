@@ -16,12 +16,11 @@ fi
 VIRTUAL_SINK="${VIRTUAL_SINK:-split_lr}"
 
 CHECK_INTERVAL="${CHECK_INTERVAL:-1}"
-VOLUME_INTERVAL="${VOLUME_INTERVAL:-0.20}"
+IDLE_CHECK_INTERVAL="${IDLE_CHECK_INTERVAL:-3}"
 ACTION_RETRY_DELAY="${ACTION_RETRY_DELAY:-12}"
 READY_TIMEOUT="${READY_TIMEOUT:-20}"
 
 PHYSICAL_BASE="${PHYSICAL_BASE:-90}"
-TOUCH_STEP="${TOUCH_STEP:-5}"
 
 SPLIT_SCRIPT="${SPLIT_SCRIPT:-$SCRIPT_DIR/split-fones.sh}"
 RESYNC_SCRIPT="${RESYNC_SCRIPT:-$SCRIPT_DIR/resync-fones.sh}"
@@ -35,15 +34,18 @@ FALLBACK_SINK="${FALLBACK_SINK:-}"
 # Volume used with one headphone or the normal computer output.
 NON_SPLIT_VOLUME="${NON_SPLIT_VOLUME:-30}"
 
-# Keep confirming the volume briefly while BlueZ settles.
-
 RESYNC_LOG="${RESYNC_LOG:-${XDG_STATE_HOME:-$HOME/.local/state}/linux-bluetooth-split-stereo/fones.log}"
+
+for command_name in pactl flock; do
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+        echo "Error: $command_name not found."
+        exit 1
+    fi
+done
 
 RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp}"
 
 LOCK_FILE="$RUNTIME_DIR/fones-watchdog-${UID}.lock"
-ACTION_FLAG="$RUNTIME_DIR/fones-watchdog-action-${UID}.flag"
-READY_FLAG="$RUNTIME_DIR/fones-watchdog-ready-${UID}.flag"
 
 # Created by michael-resolver or another manual controller.
 REQUEST_FLAG="$RUNTIME_DIR/fones-watchdog-resync-request-${UID}.flag"
@@ -141,13 +143,6 @@ clear_sync_state() {
     rm -f "$SYNC_STATE_FILE"
 }
 
-get_volume_percent() {
-    pactl get-sink-volume "$1" 2>/dev/null |
-        grep -oE '[0-9]+%' |
-        head -n1 |
-        tr -d '%'
-}
-
 reset_physical_volumes() {
     pactl set-sink-volume \
         "$LEFT_DEVICE" "${PHYSICAL_BASE}%" \
@@ -156,19 +151,6 @@ reset_physical_volumes() {
     pactl set-sink-volume \
         "$RIGHT_DEVICE" "${PHYSICAL_BASE}%" \
         >/dev/null 2>&1 || true
-}
-
-move_active_streams() {
-    local input_id
-
-    while read -r input_id _; do
-        [[ -n "$input_id" ]] || continue
-
-        pactl move-sink-input \
-            "$input_id" \
-            "$VIRTUAL_SINK" \
-            >/dev/null 2>&1 || true
-    done < <(pactl list short sink-inputs 2>/dev/null)
 }
 
 
@@ -330,7 +312,7 @@ apply_split_only() {
         "$VIRTUAL_SINK" \
         >/dev/null 2>&1 || true
 
-    move_active_streams
+    move_active_streams_to "$VIRTUAL_SINK"
     reset_physical_volumes
 }
 
@@ -380,132 +362,17 @@ finish_configuration() {
         "$VIRTUAL_SINK" \
         >/dev/null 2>&1 || true
 
-    move_active_streams
+    move_active_streams_to "$VIRTUAL_SINK"
     reset_physical_volumes
 
     save_current_signature || return 1
 
     last_routed_sink="$VIRTUAL_SINK"
 
-    : > "$READY_FLAG"
-}
-
-touch_volume_controller() {
-    local armed=0
-    local left_volume=""
-    local right_volume=""
-    local virtual_volume=""
-    local new_volume=""
-    local direction=0
-    local source=""
-
-    while true; do
-        if [[ ! -e "$READY_FLAG" ||
-              -e "$ACTION_FLAG" ]]; then
-
-            armed=0
-            sleep "$VOLUME_INTERVAL"
-            continue
-        fi
-
-        get_sink_state
-
-        if (( LEFT_AVAILABLE == 0 ||
-              RIGHT_AVAILABLE == 0 ||
-              VIRTUAL_AVAILABLE == 0 )); then
-
-            armed=0
-            sleep "$VOLUME_INTERVAL"
-            continue
-        fi
-
-        if (( armed == 0 )); then
-            reset_physical_volumes
-            armed=1
-
-            sleep 0.5
-            continue
-        fi
-
-        left_volume="$(get_volume_percent "$LEFT_DEVICE")"
-        right_volume="$(get_volume_percent "$RIGHT_DEVICE")"
-
-        direction=0
-        source=""
-
-        if [[ -n "$left_volume" &&
-              "$left_volume" -ne "$PHYSICAL_BASE" ]]; then
-
-            source="left"
-
-            if (( left_volume < PHYSICAL_BASE )); then
-                direction=-1
-            else
-                direction=1
-            fi
-
-        elif [[ -n "$right_volume" &&
-                "$right_volume" -ne "$PHYSICAL_BASE" ]]; then
-
-            source="right"
-
-            if (( right_volume < PHYSICAL_BASE )); then
-                direction=-1
-            else
-                direction=1
-            fi
-        fi
-
-        if (( direction != 0 )); then
-            virtual_volume="$(get_volume_percent "$VIRTUAL_SINK")"
-
-            if [[ -n "$virtual_volume" ]]; then
-                new_volume=$((virtual_volume + direction * TOUCH_STEP))
-
-                (( new_volume < 0 )) && new_volume=0
-                (( new_volume > 100 )) && new_volume=100
-
-                if (( new_volume != virtual_volume )); then
-                    pactl set-sink-volume \
-                        "$VIRTUAL_SINK" "${new_volume}%" \
-                        >/dev/null 2>&1 || true
-
-                    if (( direction > 0 )); then
-                        log "Touch on $source headphone: virtual volume increased to ${new_volume}%."
-                    else
-                        log "Touch on $source headphone: virtual volume reduced to ${new_volume}%."
-                    fi
-                fi
-
-                reset_physical_volumes
-                sleep 0.25
-            fi
-        fi
-
-        sleep "$VOLUME_INTERVAL"
-    done
-}
-
-touch_pid=""
-
-cleanup() {
-    # Do not remove SYNC_STATE_FILE here.
-    # It allows a service restart without another Bluetooth reconnection.
-    rm -f "$ACTION_FLAG" "$READY_FLAG"
-
-    if [[ -n "${touch_pid:-}" ]]; then
-        kill "$touch_pid" 2>/dev/null || true
-        wait "$touch_pid" 2>/dev/null || true
-    fi
 }
 
 trap 'exit 0' INT TERM
-trap cleanup EXIT
 
-rm -f "$ACTION_FLAG" "$READY_FLAG"
-
-touch_volume_controller &
-touch_pid=$!
 
 ready=0
 last_action_attempt=0
@@ -535,7 +402,6 @@ while true; do
     fi
 
     if (( both_available == 0 )); then
-        rm -f "$READY_FLAG"
 
         if [[ "$last_presence" == "both" ]]; then
             if (( any_available == 1 )); then
@@ -553,14 +419,20 @@ while true; do
         if (( LEFT_AVAILABLE == 1 &&
               RIGHT_AVAILABLE == 0 )); then
 
-            route_to_sink                 "$LEFT_DEVICE"                 "Only the left headphone is connected. Using it directly."                 || true
+            route_to_sink \
+                "$LEFT_DEVICE" \
+                "Only the left headphone is connected. Using it directly." \
+                || true
 
             last_presence="partial"
 
         elif (( RIGHT_AVAILABLE == 1 &&
                 LEFT_AVAILABLE == 0 )); then
 
-            route_to_sink                 "$RIGHT_DEVICE"                 "Only the right headphone is connected. Using it directly."                 || true
+            route_to_sink \
+                "$RIGHT_DEVICE" \
+                "Only the right headphone is connected. Using it directly." \
+                || true
 
             last_presence="partial"
 
@@ -570,7 +442,10 @@ while true; do
             )"
 
             if [[ -n "$fallback_sink" ]]; then
-                route_to_sink                     "$fallback_sink"                     "No Bluetooth headphones connected. Restoring normal output."                     || true
+                route_to_sink \
+                    "$fallback_sink" \
+                    "No Bluetooth headphones connected. Restoring normal output." \
+                    || true
             elif [[ "$last_routed_sink" != "__no_fallback__" ]]; then
                 log "No normal audio output was found."
                 last_routed_sink="__no_fallback__"
@@ -579,7 +454,11 @@ while true; do
             last_presence="none"
         fi
 
-        sleep "$CHECK_INTERVAL"
+        if (( any_available == 0 )); then
+            sleep "$IDLE_CHECK_INTERVAL"
+        else
+            sleep "$CHECK_INTERVAL"
+        fi
         continue
     fi
 
@@ -589,8 +468,6 @@ while true; do
 
         rm -f "$REQUEST_FLAG"
 
-        : > "$ACTION_FLAG"
-        rm -f "$READY_FLAG"
 
         last_action_attempt="$now"
         action_ok=0
@@ -615,7 +492,6 @@ while true; do
             log "Manual resync did not complete successfully."
         fi
 
-        rm -f "$ACTION_FLAG"
 
         sleep "$CHECK_INTERVAL"
         continue
@@ -637,7 +513,6 @@ while true; do
             log "A new PipeWire device pair was detected."
             log "Scheduling a full resync..."
 
-            rm -f "$READY_FLAG"
             clear_sync_state
             ready=0
 
@@ -651,8 +526,6 @@ while true; do
 
                 log "Virtual output disappeared. Restoring split routing..."
 
-                : > "$ACTION_FLAG"
-                rm -f "$READY_FLAG"
 
                 if apply_split_only &&
                    confirm_ready &&
@@ -665,7 +538,6 @@ while true; do
                     ready=0
                 fi
 
-                rm -f "$ACTION_FLAG"
             fi
         else
             default_sink="$(
@@ -679,7 +551,7 @@ while true; do
                     "$VIRTUAL_SINK" \
                     >/dev/null 2>&1 || true
 
-                move_active_streams
+                move_active_streams_to "$VIRTUAL_SINK"
             fi
         fi
 
@@ -694,8 +566,6 @@ while true; do
 
     last_action_attempt="$now"
 
-    : > "$ACTION_FLAG"
-    rm -f "$READY_FLAG"
 
     action_ok=0
 
@@ -727,7 +597,6 @@ while true; do
         log "A new attempt will be made later."
     fi
 
-    rm -f "$ACTION_FLAG"
 
     sleep "$CHECK_INTERVAL"
 done

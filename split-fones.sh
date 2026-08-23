@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-
 CONFIG_FILE="${BLUETOOTH_SPLIT_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/linux-bluetooth-split-stereo/config}"
 
 if [[ -r "$CONFIG_FILE" ]]; then
@@ -16,6 +14,13 @@ fi
 VIRTUAL_SINK="${VIRTUAL_SINK:-split_lr}"
 PHYSICAL_VOLUME="${PHYSICAL_VOLUME:-90%}"
 VIRTUAL_VOLUME="${VIRTUAL_VOLUME:-40%}"
+
+for command_name in pactl pw-link; do
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+        echo "Error: $command_name not found."
+        exit 1
+    fi
+done
 
 sink_exists() {
     pactl list short sinks 2>/dev/null |
