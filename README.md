@@ -242,6 +242,20 @@ When the watchdog is running, the preferred method is to send it a request:
 touch "${XDG_RUNTIME_DIR:-/tmp}/fones-watchdog-resync-request-${UID}.flag"
 ```
 
+### Hyprland shortcut
+
+On this system, manual resynchronization is also mapped to:
+
+```text
+SUPER + SHIFT + R
+```
+
+The shortcut calls:
+
+`~/.local/bin/michael-resolver`
+
+The resolver checks whether both configured headphones are connected and then sends a resynchronization request to the watchdog.
+
 The watchdog then performs one controlled resync and restores `split_lr`.
 
 This request mechanism can be integrated with voice assistants, keyboard shortcuts or other automation tools.
