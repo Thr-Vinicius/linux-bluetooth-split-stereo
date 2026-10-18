@@ -22,7 +22,7 @@ class SplitError(Exception):
 
 
 class OwnerError(SplitError):
-    """Native owner is alive but a required stream/port is missing."""
+    """A required native stream/port is pending; preserve the owner."""
     pass
 
 
@@ -50,7 +50,7 @@ def config(path):
             key, value = tokens[0].split('=', 1)
             values[key] = value
     for key, default in [('VIRTUAL_SINK', 'split_lr'), ('FALLBACK_SINK', ''),
-                         ('LATENCY_COMPENSATE', 'true'), ('AUTO_DEFAULT', 'true'),
+                         ('LATENCY_COMPENSATE', 'true'), ('AUTO_DEFAULT', 'true'), ('NATIVE_DEBUG', 'false'),
                          ('CHECK_INTERVAL', '10'), ('ACTION_RETRY_DELAY', '5')]:
         values.setdefault(key, default)
     for side in ('LEFT', 'RIGHT'):
@@ -66,7 +66,7 @@ def config(path):
         raise SplitError('Left and right must be different devices')
     if not re.fullmatch(r'[A-Za-z0-9_-]+', values['VIRTUAL_SINK']):
         raise SplitError('VIRTUAL_SINK must use letters, digits, underscore or hyphen')
-    for key in ('LATENCY_COMPENSATE', 'AUTO_DEFAULT'):
+    for key in ('LATENCY_COMPENSATE', 'AUTO_DEFAULT', 'NATIVE_DEBUG'):
         if values[key] not in ('true', 'false'):
             raise SplitError(f'{key} must be true or false')
     for key in ('CHECK_INTERVAL', 'ACTION_RETRY_DELAY'):
@@ -99,15 +99,6 @@ def native_config(cfg):
     # A mono stream per side makes the split independent of the physical layout.
     # Its one channel is fanned out to one MONO or both FL/FR device ports.
     name = cfg['VIRTUAL_SINK']
-    rules = []
-    for side, channel in [('LEFT', 'FL'), ('RIGHT', 'FR')]:
-        rules.append({'matches': [{'media.class': 'Audio/Sink',
-                                   'node.name': '~' + selector(cfg, side)}],
-                      'actions': {'create-stream': {
-                          'node.name': f'{name}.{side.lower()}',
-                          'split.owner': OWNER,
-                          'audio.position': ['MONO'],
-                          'combine.audio.position': [channel]}}})
     return spa({
         'context.properties': {'core.daemon': False},
         'context.spa-libs': {'audio.convert.*': 'audioconvert/libspa-audioconvert',
@@ -116,9 +107,11 @@ def native_config(cfg):
             {'name': 'libpipewire-module-rt', 'flags': ['ifexists', 'nofail']},
             {'name': 'libpipewire-module-protocol-native'},
             {'name': 'libpipewire-module-client-node'},
+            {'name': 'libpipewire-module-metadata'},
             {'name': 'libpipewire-module-adapter'},
             {'name': 'libpipewire-module-combine-stream', 'args': {
                 'combine.mode': 'sink', 'node.name': name,
+                'combine.on-demand-streams': True,
                 'node.description': 'Bluetooth L/R Split',
                 'combine.latency-compensate': cfg['LATENCY_COMPENSATE'] == 'true',
                 'resample.disable': False,
@@ -134,7 +127,80 @@ def native_config(cfg):
                                  'node.dont-move': True,
                                  'stream.dont-remix': True,
                                  'adapter.auto-port-config': {'mode': 'dsp'}},
-                'stream.rules': rules}}]})
+                'stream.rules': []}}]})
+
+
+def require_metadata(graph):
+    stores = [o for o in graph.objects.values() if o['type'].endswith(':Metadata')
+              and (o.get('props') or o.get('info', {}).get('props', {})).get('metadata.name') == 'default']
+    if len(stores) != 1:
+        raise SplitError(f'WAIT_METADATA: expected one default metadata store, found {len(stores)}')
+
+
+class NativeStreams:
+    """Create/recover only the required native child via combine's metadata API."""
+    def __init__(self, cfg, run=command, clock=time.monotonic):
+        self.cfg, self.run, self.clock = cfg, run, clock
+        self.requests = {}
+        self.states = {}
+
+    def update(self, graph, notify=None):
+        names = graph.named(self.cfg['VIRTUAL_SINK'])
+        if len(names) != 1 or graph.nodes[names[0]].get('split.owner') != OWNER:
+            raise SplitError('Native sink missing or foreign; no stream metadata written')
+        subject = names[0]
+        identity = graph.nodes[subject].get('object.serial', subject)
+        require_metadata(graph)
+        devices = {side: graph.physical(self.cfg, side) for side in ('LEFT', 'RIGHT')}
+        if any(len(ids) > 1 for ids in devices.values()) or set(devices['LEFT']) & set(devices['RIGHT']):
+            raise SplitError('Ambiguous physical targets; no stream metadata written')
+        children = {side: graph.named(self.cfg['VIRTUAL_SINK'] + '.' + side.lower()) for side in devices}
+        if any(len(ids) > 1 or any(graph.nodes[i].get('split.owner') != OWNER for i in ids) for ids in children.values()):
+            raise SplitError('Foreign or ambiguous child stream; no metadata written')
+        events = []
+        def emit(event):
+            if notify:
+                notify(event)
+            else:
+                events.append(event)
+        for side, channel in [('LEFT', 'FL'), ('RIGHT', 'FR')]:
+            key = 'combine.on-demand-stream.' + side.lower()
+            name = self.cfg['VIRTUAL_SINK'] + '.' + side.lower()
+            streams = children[side]
+            record_key = (identity, side)
+            detail = tuple((graph.objects[i]['info'].get('state'), len(graph.ports_for(i, 'out'))) for i in streams)
+            phase = ('ABSENT' if not devices[side] else 'STREAM_MISSING' if not streams
+                     else 'STREAM_PRESENT ' + str(detail))
+            if self.states.get(record_key) != phase:
+                emit(side + ': ' + phase)
+                self.states[record_key] = phase
+            previous = self.requests.get(record_key)
+            target = (str(graph.nodes[devices[side][0]].get('object.serial', devices[side][0]))
+                      if devices[side] else None)
+            if target is None:
+                if previous is not None or streams:
+                    self.run('pw-metadata', '-n', 'default', '-d', str(subject), key)
+                    self.requests.pop(record_key, None)
+                    emit(side + ': ABSENT (child removed)')
+                continue
+            if streams and previous and previous[0] == target and all(graph.objects[i]['info'].get('state') != 'error' for i in streams):
+                continue  # Pending ports do not justify replacing a live stream.
+            now = self.clock()
+            if previous and previous[0] == target and now - previous[1] < float(self.cfg['ACTION_RETRY_DELAY']):
+                continue  # An asynchronous request is still outstanding.
+            if previous:
+                # Same-value metadata writes do not emit an event. Delete only our key.
+                self.run('pw-metadata', '-n', 'default', '-d', str(subject), key)
+            props = {'node.name': name, 'split.owner': OWNER,
+                     'target.object': target, 'audio.position': ['MONO'],
+                     'combine.audio.position': [channel]}
+            emit(f'{side}: CREATE_REQUESTED (virtual={subject}, target.serial={target}, channel={channel})')
+            self.run('pw-metadata', '-n', 'default', str(subject), key, spa(props), 'Spa:String')
+            self.requests[record_key] = (target, now)
+        # Forget references to a previous virtual owner after server/owner restart.
+        self.requests = {k: v for k, v in self.requests.items() if k[0] == identity}
+        self.states = {k: v for k, v in self.states.items() if k[0] == identity}
+        return events
 
 
 class Graph:
@@ -184,6 +250,8 @@ class Graph:
             if streams:
                 if self.nodes[streams[0]].get('split.owner') != OWNER:
                     raise SplitError('Foreign stream occupies split name')
+                if self.objects[streams[0]]['info'].get('state') == 'error':
+                    raise OwnerError(f'{side}: STREAM_ERROR {self.objects[streams[0]]["info"].get("error", "")}')
                 outputs = self.ports_for(streams[0], 'out')
                 owned_ports.update(outputs)
             else:
@@ -198,7 +266,9 @@ class Graph:
             if sorted(channels or ['']) not in (['MONO'], ['FL', 'FR']):
                 raise SplitError(f'{side}: expected MONO or FL/FR playback ports, found {channels}')
             if len(outputs) != 1:
-                raise OwnerError(f'{side}: native mono stream not ready')
+                if not streams:
+                    raise OwnerError(f'{side}: STREAM_MISSING (physical target present)')
+                raise OwnerError(f'{side}: PORTS_PENDING (outputs={len(outputs)}, state={self.objects[streams[0]]["info"].get("state")})')
             source = next(iter(outputs))
             desired.update((source, target) for target in inputs)
         # Only links originating in our playback streams are ours to remove.
@@ -335,6 +405,19 @@ def stop_process(proc):
             proc.wait()
 
 
+def native_environment(cfg, runtime):
+    env = os.environ.copy()
+    env['PIPEWIRE_CONFIG_DIR'] = str(runtime)
+    # These environment overrides take precedence inside pw_stream_connect().
+    # They must not redirect the project's internal streams to an unrelated node.
+    for key in ('PIPEWIRE_CONFIG_NAME', 'PIPEWIRE_CONFIG_PREFIX', 'PIPEWIRE_NODE',
+                'PIPEWIRE_AUTOCONNECT', 'PIPEWIRE_PROPS'):
+        env.pop(key, None)
+    if cfg.get('NATIVE_DEBUG') == 'true':
+        env['PIPEWIRE_DEBUG'] = '2,mod.combine-stream:4'
+    return env
+
+
 def watch(cfg, runtime):
     # Separate lifetime lock from the short shared graph-operation lock.
     lifetime = lock(runtime / 'watchdog.lock')
@@ -350,7 +433,7 @@ def watch(cfg, runtime):
     signal.signal(signal.SIGTERM, stopping)
     signal.signal(signal.SIGINT, stopping)
     retry_at = 0.0
-    owner_failure_since = None
+    streams = NativeStreams(cfg)
     starting_until = 0.0
     try:
         with selectors.DefaultSelector() as poll:
@@ -368,10 +451,8 @@ def watch(cfg, runtime):
                     if native is None:
                         if graph.named(cfg['VIRTUAL_SINK']):
                             raise SplitError('Virtual sink name already exists; migrate old sink before starting')
-                        env = os.environ.copy()
-                        env['PIPEWIRE_CONFIG_DIR'] = str(runtime)
-                        env.pop('PIPEWIRE_CONFIG_NAME', None)
-                        env.pop('PIPEWIRE_CONFIG_PREFIX', None)
+                        require_metadata(graph)
+                        env = native_environment(cfg, runtime)
                         native = subprocess.Popen(['pipewire', '-c', config_path.name], env=env)
                         starting_until = time.monotonic() + 10
                         retry_at = now + 1
@@ -386,6 +467,8 @@ def watch(cfg, runtime):
                     starting_until = 0.0
                     fd = lock(runtime / 'operation.lock')
                     try:
+                        for event in streams.update(graph, lambda event: print(event, flush=True)):
+                            print(event, flush=True)
                         state, available = reconcile(cfg)
                         defaults.update(state, available, snapshot())
                         request = legacy_request(runtime)
@@ -393,7 +476,6 @@ def watch(cfg, runtime):
                             request.unlink(missing_ok=True)
                     finally:
                         os.close(fd)
-                    owner_failure_since = None
                     message = state + ' (acoustic synchronization unmeasured)'
                     if events is None or events.poll() is not None:
                         if events is not None:
@@ -404,15 +486,6 @@ def watch(cfg, runtime):
                         os.set_blocking(events.stdout.fileno(), False)
                         poll.register(events.stdout, selectors.EVENT_READ)
                 except SplitError as exc:
-                    if isinstance(exc, OwnerError):
-                        if owner_failure_since is None:
-                            owner_failure_since = time.monotonic()
-                        elif time.monotonic() - owner_failure_since >= 10:
-                            stop_process(native)
-                            native = None
-                            owner_failure_since = None
-                    else:
-                        owner_failure_since = None
                     message = f'ERROR: {exc}'
                     retry_at = time.monotonic() + float(cfg['ACTION_RETRY_DELAY'])
                 if message != previous:

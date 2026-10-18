@@ -28,6 +28,7 @@ jobs:
         env:
           SPLIT_TEST_WIREPLUMBER: '1'
           SPLIT_TEST_STARTUP_DELAY: '2'
+          SPLIT_TEST_MAC_TARGETS: '1'
         run: |
           pipewire --version
           wireplumber --version

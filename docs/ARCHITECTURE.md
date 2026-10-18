@@ -21,9 +21,15 @@ this revision does not claim older-stack support or silently fall back.
 
 The controller generates a standalone client config using the official
 filter-chain client module pattern: protocol-native, client-node, adapter, optional
-RT module, plus combine-stream. It does not become another system audio server.
-Native stream rules target only the configured sinks; exact names or anchored
-MAC-derived node-name patterns are used. More than one match is an error.
+RT module, metadata client support, plus combine-stream. It does not become another system audio server.
+The controller resolves configured sinks using exact names or anchored MAC-derived
+node-name patterns. More than one match is an error. Automatic creation rules are
+empty: each child is requested through the native on-demand metadata API, scoped
+to the virtual node and a left/right key. Its target is the current physical
+object serial. Missing/error children are retried after the existing backoff;
+healthy children and children awaiting ports are left intact. The default metadata
+store must exist uniquely before starting the owner. Missing metadata is a visible
+waiting state, not a reason to restart the audio stack.
 
 Each side's native stream has `audio.position=[MONO]` and maps just FL or FR with
 `combine.audio.position`. Its MONO port connects to a physical MONO port or both
@@ -100,3 +106,7 @@ restore policy replaces unconditional volume normalization.
 - [Native client configuration pattern](https://github.com/PipeWire/pipewire/blob/1.6.9/src/daemon/filter-chain.conf.in)
 - [WirePlumber Bluetooth monitors, profiles and logind](https://pipewire.pages.freedesktop.org/wireplumber/daemon/configuration/bluetooth.html)
 - [BlueZ Device API: connection/profile success is not audio timing](https://bluez.readthedocs.io/en/latest/device-api/)
+
+See [the startup investigation](NATIVE-STARTUP.md) for the reproduced child-loss
+recovery defect, why on-demand creation was selected, and why the first hardware
+trial’s initial trigger is still unproven.

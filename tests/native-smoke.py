@@ -15,6 +15,9 @@ spec = importlib.util.spec_from_file_location('controller', ROOT / 'bluetooth-sp
 c = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(c)
 
+LEFT_NODE = 'bluez_output.AA_BB_CC_DD_EE_01.1' if os.environ.get('SPLIT_TEST_MAC_TARGETS') else 'test_left'
+RIGHT_NODE = 'bluez_output.AA_BB_CC_DD_EE_02.1' if os.environ.get('SPLIT_TEST_MAC_TARGETS') else 'test_right'
+
 
 def wait_for(test, timeout=8):
     deadline = time.monotonic() + timeout
@@ -36,12 +39,17 @@ def daemon_config():
     objects = [{'factory': 'spa-node-factory', 'args': {
         'factory.name': 'support.node.driver', 'node.name': 'Dummy-Driver',
         'node.group': 'pipewire.dummy', 'priority.driver': 20000}}]
-    for name, positions in [('test_left', ['FL', 'FR']), ('test_right', ['MONO'])]:
+    for name, positions in [(LEFT_NODE, ['FL', 'FR']), (RIGHT_NODE, ['MONO'])]:
         objects.append({'factory': 'adapter', 'args': {
             'factory.name': 'support.null-audio-sink', 'node.name': name,
             'media.class': 'Audio/Sink', 'audio.position': positions,
             'adapter.auto-port-config': {'mode': 'dsp', 'monitor': True,
                                          'position': 'preserve'}}})
+    if not os.environ.get('SPLIT_TEST_WIREPLUMBER'):
+        # WirePlumber owns this store in policy tests; never create a duplicate.
+        objects.append({'factory': 'metadata', 'args': {
+            'metadata.name': 'default',
+            'metadata.values': [{'key': 'test.fixture', 'value': 'ready'}]}})
     return c.spa({'pulse.properties': {'server.address': ['unix:' + os.environ['XDG_RUNTIME_DIR'] + '/pulse/native']},
                        'context.properties': {'core.daemon': True, 'core.name': 'pipewire-0'},
                        'context.spa-libs': {'audio.convert.*': 'audioconvert/libspa-audioconvert',
@@ -87,8 +95,8 @@ def check_audio(runtime, processes, log):
             for in_id, target_props in inputs.items():
                 if props.get('audio.channel') == target_props.get('audio.channel'):
                     c.command('pw-link', str(out_id), str(in_id))
-    connect('test_left', 'record_left')
-    connect('test_right', 'record_right')
+    connect(LEFT_NODE, 'record_left')
+    connect(RIGHT_NODE, 'record_right')
     connect('test_player', 'split_lr')
     time.sleep(duration)
     for proc in processes[-3:]:
@@ -125,21 +133,56 @@ def main():
         os.environ['GIO_USE_VFS'] = 'local'
         os.environ.pop('PIPEWIRE_CONFIG_NAME', None)
         (runtime / 'client.conf').write_text(Path('/usr/share/pipewire/client.conf').read_text())
-        cfg = dict(LEFT_DEVICE='test_left', RIGHT_DEVICE='test_right', VIRTUAL_SINK='split_lr',
+        cfg = dict(LEFT_DEVICE=LEFT_NODE, RIGHT_DEVICE=RIGHT_NODE, VIRTUAL_SINK='split_lr',
                    LATENCY_COMPENSATE='true', AUTO_DEFAULT='false', CHECK_INTERVAL='10',
                    ACTION_RETRY_DELAY='1', FALLBACK_SINK='')
+        if os.environ.get('SPLIT_TEST_MAC_TARGETS'):
+            cfg.update(LEFT_MAC='AA:BB:CC:DD:EE:01', RIGHT_MAC='AA:BB:CC:DD:EE:02')
         (runtime / 'daemon.conf').write_text(daemon_config())
         (runtime / 'combine.conf').write_text(c.native_config(cfg))
         log = open(runtime / 'log', 'w+')
         try:
-            processes.append(subprocess.Popen(['pipewire', '-c', 'daemon.conf'],
-                                              stdout=log, stderr=log))
+            daemon = subprocess.Popen(['pipewire', '-c', 'daemon.conf'], stdout=log, stderr=log)
+            processes.append(daemon)
             wait_for(lambda: len(c.snapshot().nodes) >= 3)
-            processes.append(subprocess.Popen(['pipewire', '-c', 'combine.conf'],
-                                              stdout=log, stderr=log))
-            wait_for(lambda: len(c.snapshot().named('split_lr.right')) == 1)
-            result = wait_for(lambda: c.reconcile(cfg))
+            early_policy = None
+            if os.environ.get('SPLIT_TEST_WIREPLUMBER'):
+                address = 'unix:path=' + temp + '/early-session-bus'
+                processes.append(subprocess.Popen(['dbus-daemon', '--session', '--nofork', '--address=' + address], stdout=log, stderr=log))
+                os.environ['DBUS_SESSION_BUS_ADDRESS'] = address
+                early_policy = subprocess.Popen(['wireplumber', '-p', 'policy'], stdout=log, stderr=log)
+                processes.append(early_policy)
+                time.sleep(1)
+                assert early_policy.poll() is None
+            direct = subprocess.Popen(['pipewire', '-c', 'combine.conf'], stdout=log, stderr=log)
+            processes.append(direct)
+            wait_for(lambda: len(c.snapshot().named('split_lr')) == 1)
+            requests = c.NativeStreams(cfg)
+            initial = c.snapshot()
+            virtual = initial.named('split_lr')[0]
+            assert not initial.named('split_lr.left') and not initial.named('split_lr.right')
+            try:
+                initial.plan(cfg)
+            except c.OwnerError:
+                pass
+            else:
+                raise AssertionError('Missing native streams were reported ready')
+            # Delay discovery of one target without changing the real fixture.
+            def only_left():
+                graph = c.snapshot()
+                right = graph.named(RIGHT_NODE)[0]
+                requests.update(c.Graph([o for i, o in graph.objects.items() if i != right]))
+                return c.snapshot().named('split_lr.left')
+            left = wait_for(only_left)[0]
+            assert not c.snapshot().named('split_lr.right')
+            def initial_route():
+                requests.update(c.snapshot())
+                return c.reconcile(cfg)
+            result = wait_for(initial_route)
             assert result[0] == 'ROUTED', result
+            assert c.snapshot().named('split_lr') == [virtual]
+            assert c.snapshot().named('split_lr.left') == [left]
+            print('PASS: initially absent/delayed children become ready without replacing virtual or earlier child')
             before = c.snapshot()
             links_before = before.links
             for _ in range(10):
@@ -152,7 +195,7 @@ def main():
             # Crosswire an owned stream and verify selective removal.
             graph = c.snapshot()
             left = graph.named('split_lr.left')[0]
-            right = graph.named('test_right')[0]
+            right = graph.named(RIGHT_NODE)[0]
             out = next(iter(graph.ports_for(left, 'out')))
             inp = next(iter(graph.ports_for(right, 'in')))
             c.command('pw-link', str(out), str(inp))
@@ -161,11 +204,11 @@ def main():
             print('PASS: native mono/stereo ports, idempotence, lost-link and crosswire recovery')
             check_audio(runtime, processes, log)
             # Manual independent levels and mute survive route recovery.
-            for name, volume in [('test_left', '25%'), ('test_right', '35%'), ('split_lr', '20%')]:
+            for name, volume in [(LEFT_NODE, '25%'), (RIGHT_NODE, '35%'), ('split_lr', '20%')]:
                 c.command('pactl', 'set-sink-volume', name, volume)
-            c.command('pactl', 'set-sink-mute', 'test_left', '1')
+            c.command('pactl', 'set-sink-mute', LEFT_NODE, '1')
             settings = {(name, prop): c.command('pactl', 'get-sink-' + prop, name)
-                        for name in ('test_left', 'test_right', 'split_lr') for prop in ('volume', 'mute')}
+                        for name in (LEFT_NODE, RIGHT_NODE, 'split_lr') for prop in ('volume', 'mute')}
             graph = c.snapshot()
             owned_link = next(i for i, source, _, _ in graph.links
                               if int(graph.ports[source]['node.id']) == graph.named('split_lr.left')[0])
@@ -175,7 +218,7 @@ def main():
                        for (name, prop), value in settings.items())
             print('PASS: real Pulse manual volumes and mute preserved during link recovery')
             # Stop the direct native client and exercise the actual supervisor.
-            c.stop_process(processes[1])
+            c.stop_process(direct)
             wait_for(lambda: not c.snapshot().named('split_lr'))
             cfg_file = runtime / 'user.conf'
             cfg_file.write_text('\n'.join(f'{k}="{v}"' for k, v in dict(
@@ -206,11 +249,11 @@ def main():
             assert duplicate.returncode != 0
             assert 'Another controller' in duplicate.stderr
             graph = c.snapshot()
-            c.command('pw-cli', 'destroy', str(graph.named('test_right')[0]))
+            c.command('pw-cli', 'destroy', str(graph.named(RIGHT_NODE)[0]))
             wait_for(lambda: healthy(cfg, 'PARTIAL'))
             # Recreate a different mono sink object with the same stable name.
             c.command('pw-cli', 'create-node', 'adapter', c.spa({
-                'factory.name': 'support.null-audio-sink', 'node.name': 'test_right',
+                'factory.name': 'support.null-audio-sink', 'node.name': RIGHT_NODE,
                 'media.class': 'Audio/Sink', 'audio.position': ['MONO'], 'object.linger': True,
                 'adapter.auto-port-config': {'mode': 'dsp', 'monitor': True, 'position': 'preserve'}}))
             wait_for(lambda: healthy(cfg, 'ROUTED'))
@@ -219,19 +262,42 @@ def main():
             watch = start_watch()
             wait_for(lambda: healthy(cfg, 'ROUTED'))
             # Simulate the server disappearing under a running supervisor.
-            c.stop_process(processes[0])
+            c.stop_process(daemon)
             processes.append(subprocess.Popen(['pipewire', '-c', 'daemon.conf'], stdout=log, stderr=log))
+            if early_policy is not None:
+                # The real user unit restarts WP after server loss; emulate that
+                # lifecycle explicitly in this private server, not on the host.
+                c.stop_process(early_policy)
+                wait_for(lambda: len(c.snapshot().nodes) >= 3)
+                early_policy = subprocess.Popen(['wireplumber', '-p', 'policy'], stdout=log, stderr=log)
+                processes.append(early_policy)
             wait_for(lambda: healthy(cfg, 'ROUTED'), timeout=12)
             # Destroy only our virtual node; owner must be recreated without Bluetooth.
             old_virtual = c.snapshot().named('split_lr')[0]
             c.command('pw-cli', 'destroy', str(old_virtual))
             wait_for(lambda: healthy(cfg, 'ROUTED'), timeout=12)
+            for name, volume in [(LEFT_NODE, '25%'), (RIGHT_NODE, '35%'), ('split_lr', '20%')]:
+                c.command('pactl', 'set-sink-volume', name, volume)
+            c.command('pactl', 'set-sink-mute', LEFT_NODE, '1')
+            settings = {(name, prop): c.command('pactl', 'get-sink-' + prop, name)
+                        for name in (LEFT_NODE, RIGHT_NODE, 'split_lr') for prop in ('volume', 'mute')}
             graph = c.snapshot()
+            virtual_id = graph.named('split_lr')[0]
+            right_node = graph.named('split_lr.right')[0]
+            right_links = {i for i,a,_,_ in graph.links if int(graph.ports[a]['node.id']) == right_node}
             c.command('pw-cli', 'destroy', str(graph.named('split_lr.left')[0]))
-            wait_for(lambda: healthy(cfg, 'ROUTED'), timeout=20)
+            wait_for(lambda: healthy(cfg, 'ROUTED'), timeout=8)
+            after = c.snapshot()
+            assert after.named('split_lr') == [virtual_id], 'Child recovery replaced the virtual sink'
+            assert after.named('split_lr.right') == [right_node], 'Child recovery replaced the healthy side'
+            assert right_links <= {i for i,_,_,_ in after.links}, 'Healthy-side links changed'
+            assert all(c.command('pactl', 'get-sink-' + prop, name) == value
+                       for (name, prop), value in settings.items()), 'Child recovery changed levels/mute'
+            print('PASS: missing child recovered without replacing virtual/healthy side or changing levels/mute')
             assert watch.poll() is None
             # Isolated WirePlumber policy only: never load physical monitors.
             if os.environ.get('SPLIT_TEST_WIREPLUMBER'):
+                c.stop_process(early_policy)
                 address = 'unix:path=' + temp + '/session-bus'
                 bus = subprocess.Popen(['dbus-daemon', '--session', '--nofork', '--address=' + address],
                                        stdout=log, stderr=log)

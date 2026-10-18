@@ -140,7 +140,7 @@ class RoutingTests(unittest.TestCase):
         with self.assertRaises(c.SplitError):
             c.Graph(objects).plan(CFG)
 
-    def test_missing_native_stream_requests_owner_recovery(self):
+    def test_missing_native_stream_reports_pending_child(self):
         objects = [o for o in fixture() if o['id'] != 4]
         with self.assertRaises(c.OwnerError):
             c.Graph(objects).plan(CFG)
@@ -259,11 +259,127 @@ class PolicyTests(unittest.TestCase):
 
     def test_native_config_explicit_channel_and_resampler(self):
         text = c.native_config(CFG)
-        self.assertIn('"combine.audio.position" = [ "FL" ]', text)
-        self.assertIn('"combine.audio.position" = [ "FR" ]', text)
+        self.assertIn('"combine.on-demand-streams" = true', text)
+        self.assertIn('"stream.rules" = [  ]', text)
         self.assertIn('"resample.disable" = false', text)
         self.assertNotIn('clock.name', text)
         self.assertNotIn('force-quantum', text)
+
+
+def metadata_fixture(left=True, right=True, children=True):
+    objects = fixture(left, right)
+    objects.append({'id': 300, 'type': 'PipeWire:Interface:Metadata', 'props': {'metadata.name': 'default'}})
+    if not children:
+        objects = [o for o in objects if o['id'] not in (4, 5, 41, 51, 101, 102, 103)]
+    return c.Graph(objects)
+
+
+class NativeCreationTests(unittest.TestCase):
+    def test_explicit_channel_mapping_and_async_request_coalescing(self):
+        calls = []
+        now = [0.0]
+        manager = c.NativeStreams(CFG, lambda *a: calls.append(a), lambda: now[0])
+        missing = metadata_fixture(children=False)
+        manager.update(missing)
+        self.assertEqual(len(calls), 2)
+        self.assertIn('"combine.audio.position" = [ "FL" ]', calls[0][-2])
+        self.assertIn('"combine.audio.position" = [ "FR" ]', calls[1][-2])
+        self.assertIn('"target.object" = "2"', calls[0][-2])
+        manager.update(missing)
+        self.assertEqual(len(calls), 2, 'An outstanding request was recreated')
+        manager.update(metadata_fixture())
+        now[0] = 100
+        manager.update(metadata_fixture())
+        self.assertEqual(len(calls), 2, 'Healthy streams caused a metadata write')
+
+    def test_missing_child_retries_only_its_key(self):
+        calls = []; now = [0.0]
+        manager = c.NativeStreams(CFG, lambda *a: calls.append(a), lambda: now[0])
+        manager.update(metadata_fixture())
+        calls.clear()
+        g = metadata_fixture()
+        missing = c.Graph([o for i,o in g.objects.items() if i not in (4,41,101,102)])
+        now[0] = 10
+        manager.update(missing)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0], ('pw-metadata', '-n', 'default', '-d', '1', 'combine.on-demand-stream.left'))
+        self.assertTrue(all('combine.on-demand-stream.left' in a for a in calls))
+
+    def test_delayed_ports_do_not_restart_existing_child(self):
+        calls = []; now = [0.0]
+        manager = c.NativeStreams(CFG, lambda *a: calls.append(a), lambda: now[0])
+        manager.update(metadata_fixture())
+        calls.clear(); now[0] = 100
+        g = metadata_fixture()
+        g = c.Graph([o for i,o in g.objects.items() if i not in (41,101,102)])
+        manager.update(g)
+        self.assertEqual(calls, [])
+        with self.assertRaisesRegex(c.OwnerError, 'PORTS_PENDING'):
+            g.plan(CFG)
+
+    def test_late_device_creates_only_new_side_and_absence_removes_only_it(self):
+        calls = []
+        manager = c.NativeStreams(CFG, lambda *a: calls.append(a))
+        manager.update(metadata_fixture(left=False, children=False))
+        self.assertEqual(len(calls), 1)
+        self.assertIn('combine.on-demand-stream.right', calls[0])
+        calls.clear()
+        manager.update(metadata_fixture())
+        self.assertEqual(len(calls), 1)
+        self.assertIn('combine.on-demand-stream.left', calls[0])
+        calls.clear()
+        manager.update(metadata_fixture(left=False))
+        self.assertEqual(calls, [('pw-metadata', '-n', 'default', '-d', '1', 'combine.on-demand-stream.left')])
+
+    def test_missing_metadata_and_ambiguity_fail_without_writes(self):
+        calls = []
+        manager = c.NativeStreams(CFG, lambda *a: calls.append(a))
+        with self.assertRaisesRegex(c.SplitError, 'WAIT_METADATA'):
+            manager.update(c.Graph(fixture()))
+        objects = list(metadata_fixture().objects.values()) + [node(8, 'right')]
+        with self.assertRaises(c.SplitError):
+            manager.update(c.Graph(objects))
+        self.assertEqual(calls, [])
+
+    def test_duplicate_metadata_rejected(self):
+        graph = metadata_fixture()
+        objects = list(graph.objects.values()) + [
+            {'id': 301, 'type': 'PipeWire:Interface:Metadata', 'props': {'metadata.name': 'default'}}]
+        with self.assertRaisesRegex(c.SplitError, 'found 2'):
+            c.NativeStreams(CFG, lambda *a: self.fail('Unexpected write')).update(c.Graph(objects))
+
+    def test_error_child_retries_only_its_key_and_uses_new_target_serial(self):
+        calls = []; now = [0.0]
+        manager = c.NativeStreams(CFG, lambda *a: calls.append(a), lambda: now[0])
+        manager.update(metadata_fixture())
+        calls.clear(); now[0] = 10
+        graph = metadata_fixture()
+        graph.objects[4]['info']['state'] = 'error'
+        graph.nodes[2]['object.serial'] = 900
+        manager.update(graph)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all('combine.on-demand-stream.left' in a for a in calls))
+        self.assertIn('"target.object" = "900"', calls[-1][-2])
+
+    def test_native_environment_is_scoped_and_diagnostic_opt_in(self):
+        overrides = {key: 'wrong' for key in ('PIPEWIRE_NODE', 'PIPEWIRE_AUTOCONNECT',
+                     'PIPEWIRE_PROPS', 'PIPEWIRE_CONFIG_NAME', 'PIPEWIRE_CONFIG_PREFIX')}
+        with patch.dict(os.environ, dict(overrides, PIPEWIRE_REMOTE='private-test')):
+            env = c.native_environment(dict(CFG, NATIVE_DEBUG='true'), Path('/private/runtime'))
+            for key in overrides:
+                self.assertNotIn(key, env)
+                self.assertEqual(os.environ[key], 'wrong')
+            self.assertEqual(env['PIPEWIRE_REMOTE'], 'private-test')
+            self.assertEqual(env['PIPEWIRE_CONFIG_DIR'], '/private/runtime')
+            self.assertEqual(env['PIPEWIRE_DEBUG'], '2,mod.combine-stream:4')
+
+    def test_failed_creation_is_not_cached_as_success(self):
+        def fail(*args):
+            raise c.SplitError('metadata command failed')
+        manager = c.NativeStreams(CFG, fail)
+        with self.assertRaises(c.SplitError):
+            manager.update(metadata_fixture(children=False))
+        self.assertEqual(manager.requests, {})
 
 
 if __name__ == '__main__':

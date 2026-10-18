@@ -1,6 +1,11 @@
 # Qualification follow-up, 2026-10-18
 
-Status: **pending real-device qualification of the candidate**. The installed
+Historical preparation record. A later authorized temporary real trial failed
+before test playback and was rolled back. Current findings and limits are in
+[NATIVE-STARTUP.md](NATIVE-STARTUP.md); the next trial is prepared in
+[SECOND-TRIAL.md](SECOND-TRIAL.md) and has not been executed.
+
+Status at the preparation snapshot: **pending real-device qualification of the candidate**. The installed
 legacy audio graph was inspected read-only. No live links, devices, services,
 levels, defaults or permanent personal configuration were changed.
 

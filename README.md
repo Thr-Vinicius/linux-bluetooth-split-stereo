@@ -23,9 +23,11 @@ Applications following the selected output
        (or MONO)           (or MONO)
 ```
 
-PipeWire owns stream creation/removal as devices appear/disappear, buffering,
-latency reporting and adaptive resampling. The controller owns only the links
-from its two output streams. Streams cannot automatically fall back to the wrong
+PipeWire owns buffering, latency reporting and adaptive resampling. The controller
+requests each native child through combine-stream’s on-demand metadata API as its
+physical target appears, and controls only the links from those two output streams.
+A missing/error child is retried independently; a healthy child and the virtual
+sink are preserved. Streams cannot automatically fall back to the wrong
 device. No common hardware clock is fabricated. No forced quantum, sample rate,
 codec, profile or Bluetooth reconnect is used.
 
@@ -59,7 +61,8 @@ output stay there; apps pinned to a disconnected split may need manual rerouting
 ## Requirements
 
 - Linux user session with `XDG_RUNTIME_DIR`
-- PipeWire with `libpipewire-module-combine-stream`, `pipewire`, `pw-dump`, `pw-link`
+- PipeWire with `libpipewire-module-combine-stream`, `pipewire`, `pw-dump`, `pw-link`, `pw-metadata`
+- Exactly one session `default` metadata store (normally provided by WirePlumber)
 - WirePlumber, BlueZ, paired headphones and PipeWire Pulse compatibility (`pactl`)
 - Python 3.9+ (standard library only), Bash
 - Optional standalone media shortcut: `playerctl`, `flock`, `timeout`, GNU `date/stat`
@@ -82,7 +85,9 @@ or automatically reconnect a device you disconnected.
 ## Install and try the review branch
 
 Use the branch under review; do not install over a working setup without a backup.
-No installation or real-session service changes were performed during development.
+The first authorized temporary hardware trial failed before test playback and was
+rolled back. The current revision has only isolated validation; permanent
+installation and acoustic qualification remain pending.
 
 ```bash
 git clone --branch refactor/stable-native-split \
@@ -224,3 +229,9 @@ waits for verified routes from the supervisor. LICENSE remains MIT.
 
 For staged real-device qualification and a finite passive observation command,
 see [the qualification record](docs/HOMOLOGATION.md).
+
+The [native startup investigation](docs/NATIVE-STARTUP.md) records the failed real
+trial, the selective child lifecycle correction and its evidence limits. The
+[second trial procedure](docs/SECOND-TRIAL.md) requires new authorization and uses
+normal video listening with passive monitoring. `NATIVE_DEBUG="true"` enables
+combine-stream diagnostics for a future candidate run; it does not measure sound.

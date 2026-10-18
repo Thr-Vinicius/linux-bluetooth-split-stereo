@@ -1,5 +1,10 @@
 # Validation record and hardware acceptance procedure
 
+The counts below describe earlier validation. Current startup/lifecycle results
+and hardware limits are recorded in [NATIVE-STARTUP.md](NATIVE-STARTUP.md). The
+next authorized session follows [SECOND-TRIAL.md](SECOND-TRIAL.md); the broader
+hardware scenarios below are not authorization to execute them.
+
 ## Executed in isolation
 
 Environment: PipeWire 1.6.9, WirePlumber 0.5.17, Python 3.14.7 and ShellCheck

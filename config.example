@@ -24,3 +24,7 @@ FALLBACK_SINK=""
 CHECK_INTERVAL=10
 # Bounded retry after command, graph or server failure (no Bluetooth reconnection).
 ACTION_RETRY_DELAY=5
+
+# Optional diagnostics for the candidate native client; may log device identifiers.
+# Apply only on its next explicit start. No acoustic measurement is performed.
+NATIVE_DEBUG="false"
