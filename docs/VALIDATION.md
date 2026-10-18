@@ -30,9 +30,12 @@ were not changed. No real Bluetooth devices were used.
 - ShellCheck passed on all shell entry points including legacy/media scripts.
   Bash syntax, Python compilation, `git diff --check`, and systemd unit verification
   passed. Unit verification checks configuration, not a real service deployment.
-- A GitHub Actions workflow was added for repeatable unit, static and isolated
-  native tests. Remote CI results are separate from these local results; versions
-  supplied by Ubuntu may expose compatibility differences needing follow-up.
+- The first Ubuntu native CI run failed with PipeWire 1.0.5 / WirePlumber 0.4.17:
+  the standalone virtual sink did not expose the expected FL/FR ports. This is
+  recorded as a compatibility limit, not discarded as a successful test. CI now
+  keeps unit/static tests on Ubuntu and targets current Arch packages for native
+  tests, matching the modern PipeWire / WirePlumber 0.5 environment. Older-stack
+  production compatibility has not been established.
 
 Native tests may log expected connection errors when deliberately destroying the
 server/streams. Missing system-bus/RT scheduling messages are expected in the

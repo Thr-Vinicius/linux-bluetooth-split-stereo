@@ -15,6 +15,10 @@ was treated as authoritative. Research and isolated execution used PipeWire
 | Custom latency/drift control | Could express measured device-specific corrections | No accurate acoustic sensor or benefit evidence; rejected |
 | Bluetooth disconnect/reconnect | Sometimes changes perceived alignment on particular devices | Resets transport and interrupts audio; not a timing reference; rejected as normal recovery |
 
+Compatibility check: the standalone port test failed on Ubuntu CI with PipeWire
+1.0.5 / WirePlumber 0.4.17. Native integration targets the modern tested stack;
+this revision does not claim older-stack support or silently fall back.
+
 The controller generates a standalone client config using the official
 filter-chain client module pattern: protocol-native, client-node, adapter, optional
 RT module, plus combine-stream. It does not become another system audio server.

@@ -65,7 +65,9 @@ output stay there; apps pinned to a disconnected split may need manual rerouting
 - Optional standalone media shortcut: `playerctl`, `flock`, `timeout`, GNU `date/stat`
 
 Tested in isolation with **PipeWire 1.6.9 / WirePlumber 0.5.17 / Python 3.14.7**. Older versions have
-not been qualified. Check that your distribution includes the combine-stream
+not been qualified; the standalone native test failed with PipeWire 1.0.5 /
+WirePlumber 0.4.17 in Ubuntu CI because the virtual input ports were missing.
+Do not treat that older stack as supported by this revision. Check that your distribution includes the combine-stream
 module; a missing module causes a visible error rather than silently falling
 back to the old architecture. WirePlumber policy restart was tested against dummy sinks, with hardware
 monitors disabled and a private session bus. BlueZ/hardware integration remains
