@@ -268,6 +268,18 @@ def lock(path, blocking=False):
     return fd
 
 
+def legacy_request(runtime):
+    """Compatibility with installed resolvers: request route repair, never reconnect."""
+    path = runtime.parent / f'fones-watchdog-resync-request-{os.getuid()}.flag'
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    if stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid():
+        return path
+    return None
+
+
 class Defaults:
     """Take the default only on presence transitions; respect manual changes."""
     def __init__(self, cfg, path, run=command):
@@ -302,7 +314,10 @@ class Defaults:
                 self.data['selected'] = target
             elif current == target:
                 self.data['selected'] = current
-            self.data['presence'] = presence
+            # An unavailable fallback is not a completed transition. Retry when
+            # its node appears, even if headphone presence stayed unchanged.
+            if target or not controlled:
+                self.data['presence'] = presence
         if json.dumps(self.data) == old_data:
             return
         temp = self.path.with_suffix('.tmp')
@@ -336,6 +351,7 @@ def watch(cfg, runtime):
     signal.signal(signal.SIGINT, stopping)
     retry_at = 0.0
     owner_failure_since = None
+    starting_until = 0.0
     try:
         with selectors.DefaultSelector() as poll:
             while not stopped:
@@ -357,17 +373,24 @@ def watch(cfg, runtime):
                         env.pop('PIPEWIRE_CONFIG_NAME', None)
                         env.pop('PIPEWIRE_CONFIG_PREFIX', None)
                         native = subprocess.Popen(['pipewire', '-c', config_path.name], env=env)
+                        starting_until = time.monotonic() + 10
                         retry_at = now + 1
                         continue
                     if not graph.named(cfg['VIRTUAL_SINK']):
+                        if time.monotonic() < starting_until:
+                            raise SplitError('Native client initializing; waiting for virtual sink')
                         # Owner alive but its node was removed: restart only our client.
                         stop_process(native)
                         native = None
                         raise SplitError('Native sink disappeared; restarting its owner')
+                    starting_until = 0.0
                     fd = lock(runtime / 'operation.lock')
                     try:
                         state, available = reconcile(cfg)
                         defaults.update(state, available, snapshot())
+                        request = legacy_request(runtime)
+                        if request is not None:
+                            request.unlink(missing_ok=True)
                     finally:
                         os.close(fd)
                     owner_failure_since = None
@@ -399,7 +422,9 @@ def watch(cfg, runtime):
                 # link-only changes. Ignore client churn caused by graph inspection.
                 deadline = time.monotonic() + float(cfg['CHECK_INTERVAL'])
                 while not stopped and time.monotonic() < deadline:
-                    delay = min(1, deadline - time.monotonic())
+                    if legacy_request(runtime) is not None:
+                        break
+                    delay = max(0, min(1, deadline - time.monotonic()))
                     if events and events.poll() is None:
                         if poll.select(timeout=delay):
                             payload = os.read(events.stdout.fileno(), 65536)

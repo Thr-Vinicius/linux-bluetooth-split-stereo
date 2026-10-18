@@ -225,6 +225,30 @@ class PolicyTests(unittest.TestCase):
                 with self.assertRaises(c.SplitError):
                     c.config(path)
 
+    def test_default_retries_when_fallback_appears_later(self):
+        with tempfile.TemporaryDirectory() as temp:
+            calls = []
+            def run(*args):
+                calls.append(args)
+                return 'split_lr' if args[1] == 'get-default-sink' else ''
+            policy = c.Defaults(CFG, Path(temp) / 'defaults.json', run)
+            without_fallback = [o for o in fixture(False, False) if o['id'] != 9]
+            policy.update('DISCONNECTED', [], c.Graph(without_fallback))
+            policy.update('DISCONNECTED', [], c.Graph(fixture(False, False)))
+            self.assertIn(('pactl', 'set-default-sink', 'normal'), calls)
+
+    def test_legacy_request_is_owner_checked_and_never_follows_symlink(self):
+        with tempfile.TemporaryDirectory() as temp:
+            runtime = Path(temp) / c.OWNER
+            runtime.mkdir()
+            flag = Path(temp) / f'fones-watchdog-resync-request-{os.getuid()}.flag'
+            self.assertIsNone(c.legacy_request(runtime))
+            flag.touch()
+            self.assertEqual(c.legacy_request(runtime), flag)
+            flag.unlink()
+            flag.symlink_to(runtime)
+            self.assertIsNone(c.legacy_request(runtime))
+
     def test_command_deadline_and_nonzero(self):
         for error in (c.subprocess.TimeoutExpired('pactl', 5),
                       c.subprocess.CalledProcessError(1, 'pw-link')):

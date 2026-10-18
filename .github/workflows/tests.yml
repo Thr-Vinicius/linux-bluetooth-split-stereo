@@ -27,6 +27,7 @@ jobs:
       - name: Private PipeWire and WirePlumber integration
         env:
           SPLIT_TEST_WIREPLUMBER: '1'
+          SPLIT_TEST_STARTUP_DELAY: '2'
         run: |
           pipewire --version
           wireplumber --version

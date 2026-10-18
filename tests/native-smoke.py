@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import tempfile
 import time
 
@@ -180,6 +181,13 @@ def main():
             cfg_file.write_text('\n'.join(f'{k}="{v}"' for k, v in dict(
                 cfg, CHECK_INTERVAL='1', ACTION_RETRY_DELAY='1').items()) + '\n')
             os.environ['BLUETOOTH_SPLIT_CONFIG'] = str(cfg_file)
+            if os.environ.get('SPLIT_TEST_STARTUP_DELAY'):
+                wrapper = runtime / 'bin'
+                wrapper.mkdir()
+                real_pipewire = shutil.which('pipewire')
+                (wrapper / 'pipewire').write_text('#!/bin/sh\nsleep 2\nexec ' + real_pipewire + ' "$@"\n')
+                (wrapper / 'pipewire').chmod(0o700)
+                os.environ['PATH'] = str(wrapper) + os.pathsep + os.environ['PATH']
             def start_watch():
                 proc = subprocess.Popen(['python3', str(ROOT / 'bluetooth-split-controller.py'), 'watch'],
                                         stdout=log, stderr=log)
@@ -187,6 +195,12 @@ def main():
                 return proc
             watch = start_watch()
             wait_for(lambda: healthy(cfg, 'ROUTED'))
+            flag = runtime / f'fones-watchdog-resync-request-{os.getuid()}.flag'
+            graph = c.snapshot()
+            c.command('pw-link', '-d', str(graph.links[0][0]))
+            flag.touch()
+            wait_for(lambda: healthy(cfg, 'ROUTED') and not flag.exists())
+            print('PASS: legacy resolver request acknowledged after verified graph repair')
             duplicate = subprocess.run(['python3', str(ROOT / 'bluetooth-split-controller.py'), 'watch'],
                                        capture_output=True, text=True, timeout=5)
             assert duplicate.returncode != 0
