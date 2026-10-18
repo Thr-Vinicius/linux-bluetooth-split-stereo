@@ -126,6 +126,11 @@ python3 ~/.local/bin/bluetooth-split-controller.py status
 ~/.local/bin/resync-fones.sh
 ```
 
+Existing resolvers may also create
+`$XDG_RUNTIME_DIR/fones-watchdog-resync-request-$UID.flag`. The owner accepts a
+regular file owned by this user and acknowledges it after route validation. It
+requests route repair only, never transport or acoustic resynchronization.
+
 Both repair scripts now perform the same non-disconnecting, idempotent route
 check. They need the foreground supervisor or installed service to own the native
 sink; they do not start a hidden background process. `resync-fones.sh` cannot
@@ -216,3 +221,6 @@ The [audit](docs/AUDIT.md) distinguishes observed defects from hardware-dependen
 risks. The [migration guide](docs/MIGRATION.md) includes backup and rollback.
 The former bounded startup waiter remains in `legacy/auto-split-fones.sh`; it now
 waits for verified routes from the supervisor. LICENSE remains MIT.
+
+For staged real-device qualification and a finite passive observation command,
+see [the qualification record](docs/HOMOLOGATION.md).

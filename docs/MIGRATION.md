@@ -34,8 +34,11 @@ services, disconnect devices or modify your personal configuration.
    stopped. Choose a low physical volume manually before listening.
 7. Replace shortcut/voice integrations that touch
    `/tmp/fones-watchdog-resync-request-UID.flag` or its runtime equivalent with a
-   call to `~/.local/bin/resync-fones.sh`. The old flag protocol is retired; flags
-   are not consumed, and arbitrary external resolver programs are not executed.
+   call to `~/.local/bin/resync-fones.sh` when convenient. For installed resolver
+   compatibility, the per-user flag in `XDG_RUNTIME_DIR` is still accepted as a
+   request for route repair only. It is acknowledged only after graph validation;
+   symlinks and foreign-owner flags are ignored. The old `/tmp` fallback is not
+   accepted. Arbitrary external resolver programs are not executed.
    Do not use this operation to resume paused players.
 8. After checking left-only/right-only audio and fallback behavior, stop the
    foreground instance, then enable/start the user service. Run the hardware
