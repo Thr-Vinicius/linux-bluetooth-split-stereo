@@ -81,9 +81,10 @@ um caminho de recuperação previamente demonstrado. Se isso não puder ser gara
 pela ferramenta, usar um terminal local estável sob controle do usuário e validar
 seu controle antes da troca. Não iniciar com uma guarda apenas presumida.
 
-O motor é uma biblioteca de suporte validada em isolamento, não um launcher
-universal de homologação em hardware. Um executor real deve adaptar o snapshot,
-controle local do serviço, guarda de prazo e notificações ao ambiente validado.
+O motor foi integrado ao [supervisor persistente](TRIAL-SUPERVISOR.md), com
+preflight de leitura e executor explícito de plano revisado. O fluxo completo é
+testado em isolamento; controle de systemd e áudio reais continuam sem ensaio
+nesta missão. O executor deve permanecer vivo até o estado final.
 O [plano comparativo](COMPARISON.md) define os gates; não autoriza executar o teste.
 
 ## Cobertura e limites
@@ -104,3 +105,11 @@ não uma solução por aumento arbitrário de timeout.
 Python 3.9+ e kernel com pidfds são necessários para esse suporte de ensaio. Não
 há fallback que mate por PID em sistemas sem esse recurso. A instalação regular
 do split não passa a depender do motor de ensaios.
+
+## Integração posterior
+
+O supervisor e o procedimento exato estão em [TRIAL-SUPERVISOR.md](TRIAL-SUPERVISOR.md).
+O prazo global também limita espera de processos e remoção de recursos. O serviço
+real inclui InvocationID além de MainPID na identificação. A comparação de rotas
+não exige preservar fallback transitório das portas EasyEffects já controladas,
+mas continua exigindo as rotas efetivamente alheias.

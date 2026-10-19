@@ -93,20 +93,20 @@ class OwnedGroup:
         finally:
             os.close(fd)
 
-    def stop(self, grace=3):
+    def stop(self, grace=3, deadline=None):
         self.assert_context()
         self.refresh()
         # Controller first: it handles TERM and closes its native child. Captured
         # descendants are signalled too, including a hung child or orphan.
         for pid in self.alive():
             self.send(pid,signal.SIGTERM)
-        deadline = time.monotonic() + grace
-        while self.alive() and time.monotonic() < deadline:
+        term_deadline = min(time.monotonic()+grace, deadline) if deadline is not None else time.monotonic()+grace
+        while self.alive() and time.monotonic() < term_deadline:
             time.sleep(.05)
         for pid in self.alive():
             self.send(pid,signal.SIGKILL)
-        deadline = time.monotonic() + 2
-        while self.alive() and time.monotonic() < deadline:
+        kill_deadline = min(time.monotonic()+2, deadline) if deadline is not None else time.monotonic()+2
+        while self.alive() and time.monotonic() < kill_deadline:
             time.sleep(.05)
         if self.alive():
             raise RollbackError('Owned processes did not terminate')
@@ -172,10 +172,11 @@ class ReturnSupervisor:
     Exceptions leave FAILED, never a done flag; a retry repeats verification.
     """
     def __init__(self, path, group, resources, backend, timeout=8, sleep=time.sleep,
-                 clock=time.monotonic):
+                 clock=time.monotonic, deadline=None):
         self.path = private_directory(path)
         self.group, self.resources, self.backend = group, resources, backend
         self.timeout, self.sleep, self.clock = timeout, sleep, clock
+        self.deadline = deadline
 
     def run(self):
         self.group.assert_context()  # Before muting or any service/audio write.
@@ -193,8 +194,12 @@ class ReturnSupervisor:
                 save_state(self.path, {'phase': 'STOPPING', 'complete': False})
                 self.resources.remember(self.backend.graph())
                 self.backend.mute()
-                self.group.stop()
+                if self.deadline is None:
+                    self.group.stop()
+                else:
+                    self.group.stop(deadline=self.deadline)
                 deadline = self.clock() + self.timeout
+                if self.deadline is not None:deadline=min(deadline,self.deadline)
                 while self.resources.remaining(self.backend.graph()):
                     if self.clock() >= deadline:
                         raise RollbackError('Candidate resources still exported; original watchdog remains paused')
@@ -205,7 +210,7 @@ class ReturnSupervisor:
                 self.backend.restore()
                 verification = self.backend.verify()
                 if not verification['resources_ok']:
-                    raise RollbackError('Original resources not verified; watchdog remains paused')
+                    raise RollbackError('Original resources not verified; watchdog remains paused: '+str(verification.get('checks',{})))
                 # A concurrent new candidate invalidates the handoff too.
                 if self.resources.remaining(self.backend.graph()):
                     raise RollbackError('Candidate returned before handoff')
@@ -395,7 +400,8 @@ class PulseRestore:
         virtual=self.cfg['VIRTUAL_SINK']
         temporary={virtual,virtual+'.left',virtual+'.right'}
         unrelated={tuple(e) for e in self.playback['edges']
-                   if e[0] not in temporary and e[2] not in temporary}
+                   if e[0] not in temporary and e[2] not in temporary and
+                   (e[0],e[1]) not in controlled}
         return actual==self.expected and unrelated<=current
 
     def verify(self):
@@ -432,12 +438,12 @@ class WatchdogLease:
 
     def state(self):
         output=self.run(*self.prefix,'show',self.unit,'-p','MainPID','-p','ActiveState',
-                        '-p','SubState','-p','UnitFileState','-p','FreezerState')
+                        '-p','SubState','-p','UnitFileState','-p','FreezerState','-p','InvocationID')
         return dict(line.split('=',1) for line in output.splitlines())
 
     def paused(self):
         state=self.state()
-        return state.get('MainPID')==self.saved['MainPID'] and state.get('FreezerState')=='frozen'
+        return state.get('MainPID')==self.saved['MainPID'] and all(state.get(k)==self.saved[k] for k in ('InvocationID',) if k in self.saved) and state.get('FreezerState')=='frozen'
 
     def resume(self):
         if self.request_flag.exists() or not self.paused():
@@ -446,4 +452,4 @@ class WatchdogLease:
 
     def verify_resumed(self):
         state=self.state()
-        return all(state.get(k)==self.saved[k] for k in ('MainPID','ActiveState','SubState','UnitFileState')) and state.get('FreezerState')=='running'
+        return all(state.get(k)==self.saved[k] for k in ('MainPID','ActiveState','SubState','UnitFileState')+tuple(k for k in ('InvocationID',) if k in self.saved)) and state.get('FreezerState')=='running'

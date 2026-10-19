@@ -107,6 +107,12 @@ def main():
                         if p.get('audio.channel') == q.get('audio.channel'):
                             c.command('pw-link', str(i), str(j))
 
+            if '--supervisor' in sys.argv and not real_ee:
+                data=array.array('f',[.1,-.2]*(48000*120))
+                (runtime/'fixture-player.raw').write_bytes(data.tobytes())
+                processes.append(subprocess.Popen(['pw-cat','--playback','--raw','--format','f32','--channels','2','--target','easyeffects_sink',str(runtime/'fixture-player.raw')],stdout=log,stderr=log))
+                smoke.wait_for(lambda:bool(json.loads(c.command('pactl','-f','json','list','sink-inputs'))))
+
             connect('independent_source', 'independent_target')
             graph = c.snapshot()
             independent = {i for i, a, _, _ in graph.links if
@@ -129,7 +135,10 @@ def main():
                     default=c.command('pactl', 'get-default-sink').strip(), legacy=dict(argument=argument),
                     hashes={str(runtime / 'client.conf'): hashlib.sha256((runtime / 'client.conf').read_bytes()).hexdigest()})
 
-            for scenario in ['normal', 'partial-startup', 'no-sink']:
+            scenarios=(['requested','deadline','candidate-failure','swap-failure','return-failure','readiness-timeout','cancelled','requester-exit','signal','command-timeout','return-persistent-failure']
+                       if '--supervisor' in sys.argv else ['normal','partial-startup','no-sink'])
+            if os.environ.get('SPLIT_E2E_SCENARIO'):scenarios=[os.environ['SPLIT_E2E_SCENARIO']]
+            for scenario in scenarios:
                 c.command('pactl', 'load-module', 'module-null-sink', argument)
                 smoke.wait_for(lambda: port_ready('split_lr'))
                 for side, channel in [('LEFT', 'FL'), ('RIGHT', 'FR')]:
@@ -152,6 +161,14 @@ def main():
                 c.command('pactl', 'set-sink-mute', cfg['LEFT_DEVICE'], '1')
                 c.command('pactl', 'set-default-sink', 'split_lr')
                 before = capture()
+                if '--supervisor' in sys.argv:
+                    import session_native
+                    session_native.run(runtime,cfg,scenario,c,independent,ee_output)
+                    restored=[line.split('\t')[0] for line in c.command('pactl','list','short','modules').splitlines() if '\tmodule-null-sink\tsink_name=split_lr ' in line]
+                    assert len(restored)==1
+                    c.command('pactl','unload-module',restored[0])
+                    smoke.wait_for(lambda:not c.snapshot().named('split_lr'))
+                    continue
                 old = [line.split('\t')[0] for line in c.command('pactl', 'list', 'short', 'modules').splitlines()
                        if '\tmodule-null-sink\tsink_name=split_lr ' in line]
                 assert len(old) == 1

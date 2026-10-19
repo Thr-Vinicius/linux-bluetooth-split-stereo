@@ -243,3 +243,11 @@ real EasyEffects instance with private state and dummy outputs. These tests do
 not qualify real Bluetooth or systemd control. The [controlled A–B–A proposal](docs/COMPARISON.md)
 includes known channel references and a listening worksheet; it requires separate
 authorization. [Volume artifacts](docs/VOLUME-ARTIFACTS.md) remain under investigation.
+
+The [integrated trial supervisor](docs/TRIAL-SUPERVISOR.md) now exercises the whole
+swap/monitor/return lifecycle in private servers. `python3 tests/rollback-native.py
+--supervisor` covers requests, deadlines, candidate exit and partial/permanent
+restoration failures; add `--easyeffects` for real private EasyEffects.
+`tools/trial-supervisor.py --prepare` is read-only for the live session. Execution
+requires separate explicit authorization and a persistent owner; do not run a real
+trial as part of preparation.

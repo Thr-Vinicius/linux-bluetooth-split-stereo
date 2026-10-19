@@ -19,7 +19,7 @@ O objetivo é verificar consistência e recuperação, sem presumir superioridad
 - Preparar diretório candidato separado e token único; AUTO_DEFAULT=false,
   diagnóstico nativo ativo. Fixar opções, trecho, níveis, controle de volume,
   processamento e caminho aplicativo → EasyEffects → split para A e B.
-- Integrar e demonstrar o supervisor persistente e sua guarda de prazo conforme
+- Usar o [supervisor integrado](TRIAL-SUPERVISOR.md), testado de ponta a ponta, e revalidar seu controle conforme
   [ROLLBACK.md](ROLLBACK.md). A biblioteca não inicia ensaios. Exigir controle do
   mesmo contexto que criou os processos e atendimento do pedido por arquivo.
   Demonstrar recuperação se o candidato falhar; não confiar em PID salvo numa
@@ -33,15 +33,16 @@ O objetivo é verificar consistência e recuperação, sem presumir superioridad
 
 ## Janela e limites
 
-Cronômetro monotônico e guarda começam **antes da primeira intervenção**. Reservar
+Cronômetro monotônico e guarda começam em ARMED, **antes da primeira intervenção**,
+incluindo a breve avaliação A inicial (até 30 s para enviar o pedido de troca). Reservar
 quatro minutos para retorno e conferência. O usuário pode encerrar antes. Avisar
 antes do encerramento normal; iniciar retorno até o minuto seis, mesmo sem resposta.
 Não aguardar autorização adicional para cumprir o prazo já autorizado.
 
 | Minuto máximo | Ação |
 | --- | --- |
-| 0–1 | A: usuário reproduz referência conhecida e trecho escolhido; registrar audição e grafo. |
-| 1–2 | Congelar somente o watchdog identificado, confirmar frozen, mute temporário; remover exclusivamente o null confirmado. Iniciar B com grupo/token/ledger. |
+| 0–0,5 | A: usuário reproduz referência conhecida e trecho escolhido; registrar audição e grafo. |
+| 0,5–2 | Congelar somente o watchdog identificado, confirmar frozen, mute temporário; remover exclusivamente o null confirmado. Iniciar B com grupo/token/ledger. |
 | até 30 s da partida B | Exigir virtual FL/FR, filhos MONO esquerdo/direito, destinos/canais/links corretos, ROUTED e ausência de reinícios/erros. Qualquer falta: retorno imediato. |
 | 2–4 | Avisar prontidão; usuário inicia os mesmos materiais. Observação passiva e avaliação. Pequenos ajustes voluntários no mesmo controle, se confortáveis. |
 | 4–6 | Avisar encerramento; terminar B e executar retorno verificado. Se concluído, usuário compara A novamente com o mesmo trecho. |
