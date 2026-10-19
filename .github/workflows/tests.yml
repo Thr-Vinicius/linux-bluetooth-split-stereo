@@ -33,3 +33,4 @@ jobs:
           pipewire --version
           wireplumber --version
           python tests/native-smoke.py
+          python tests/rollback-native.py

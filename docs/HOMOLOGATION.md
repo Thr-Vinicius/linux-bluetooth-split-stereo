@@ -124,3 +124,14 @@ Test disconnects, supervisor restart, load and suspend/resume need their own
 explicitly authorized scope. Definitive installation is a later decision after
 real-device results. Use backed-up original files and recorded levels/defaults
 for rollback; do not reuse stale numeric object IDs.
+
+## Revisão posterior — retorno e comparação
+
+O segundo ensaio em e17ada5 alcançou ROUTED em 2,594 s e o manteve nas 43
+amostras registradas. O retorno inicial falhou e exigiu recuperação adicional,
+conferida em 319,723 s. O usuário posteriormente comparou com um fone estéreo
+convencional e considerou a experiência normal: a suspeita de separação defeituosa
+não sustenta mudanças de áudio. Não há aprovação acústica definitiva.
+
+O [diagnóstico e contrato de retorno](ROLLBACK.md) substitui o controle temporário
+antigo; o [plano A–B–A](COMPARISON.md) prepara a comparação, sem executá-la.

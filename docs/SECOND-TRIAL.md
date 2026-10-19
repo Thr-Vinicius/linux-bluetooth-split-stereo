@@ -1,3 +1,8 @@
+> Registro histórico do plano anterior ao segundo ensaio. Ele foi executado em
+> e17ada5; sua primeira tentativa de retorno exigiu recuperação adicional. Para
+> uma nova execução, usar [ROLLBACK.md](ROLLBACK.md) e [COMPARISON.md](COMPARISON.md).
+> O texto abaixo preserva a proposta original e não é autorização vigente.
+
 # Segundo ensaio proposto — vídeo normal e observação passiva
 
 **Não executado e ainda sem autorização.** A autorização do primeiro ensaio não

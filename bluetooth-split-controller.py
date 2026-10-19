@@ -51,7 +51,7 @@ def config(path):
             values[key] = value
     for key, default in [('VIRTUAL_SINK', 'split_lr'), ('FALLBACK_SINK', ''),
                          ('LATENCY_COMPENSATE', 'true'), ('AUTO_DEFAULT', 'true'), ('NATIVE_DEBUG', 'false'),
-                         ('CHECK_INTERVAL', '10'), ('ACTION_RETRY_DELAY', '5')]:
+                         ('CHECK_INTERVAL', '10'), ('ACTION_RETRY_DELAY', '5'), ('TRIAL_TOKEN', '')]:
         values.setdefault(key, default)
     for side in ('LEFT', 'RIGHT'):
         mac = values.get(f'{side}_MAC', '')
@@ -66,6 +66,8 @@ def config(path):
         raise SplitError('Left and right must be different devices')
     if not re.fullmatch(r'[A-Za-z0-9_-]+', values['VIRTUAL_SINK']):
         raise SplitError('VIRTUAL_SINK must use letters, digits, underscore or hyphen')
+    if values['TRIAL_TOKEN'] and not re.fullmatch(r'[a-zA-Z0-9_-]{16,64}', values['TRIAL_TOKEN']):
+        raise SplitError('TRIAL_TOKEN must contain 16..64 letters, digits, underscore or hyphen')
     for key in ('LATENCY_COMPENSATE', 'AUTO_DEFAULT', 'NATIVE_DEBUG'):
         if values[key] not in ('true', 'false'):
             raise SplitError(f'{key} must be true or false')
@@ -118,10 +120,12 @@ def native_config(cfg):
                 'combine.props': {'audio.position': ['FL', 'FR'],
                                   'adapter.auto-port-config': {'mode': 'dsp'},
                                   'split.owner': OWNER,
+                                  **({'split.session': cfg['TRIAL_TOKEN']} if cfg.get('TRIAL_TOKEN') else {}),
                                   'priority.session': 0,
                                   # Safe initial level; WirePlumber restores saved values.
                                   'node.param.Props': {'volume': 0.064}},
-                'stream.props': {'node.autoconnect': False,
+                'stream.props': {**({'split.session': cfg['TRIAL_TOKEN']} if cfg.get('TRIAL_TOKEN') else {}),
+                                 'node.autoconnect': False,
                                  'node.dont-fallback': True,
                                  'node.dont-reconnect': True,
                                  'node.dont-move': True,
@@ -192,6 +196,7 @@ class NativeStreams:
                 # Same-value metadata writes do not emit an event. Delete only our key.
                 self.run('pw-metadata', '-n', 'default', '-d', str(subject), key)
             props = {'node.name': name, 'split.owner': OWNER,
+                     **({'split.session': self.cfg['TRIAL_TOKEN']} if self.cfg.get('TRIAL_TOKEN') else {}),
                      'target.object': target, 'audio.position': ['MONO'],
                      'combine.audio.position': [channel]}
             emit(f'{side}: CREATE_REQUESTED (virtual={subject}, target.serial={target}, channel={channel})')

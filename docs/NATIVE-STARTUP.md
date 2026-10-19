@@ -142,3 +142,14 @@ a próxima etapa é o [segundo ensaio autorizado](SECOND-TRIAL.md).
 - [PipeWire 1.6.9: registry_event_global, metadata_property, create_stream e remoção](https://github.com/PipeWire/pipewire/blob/1.6.9/src/modules/module-combine-stream.c)
 - [PipeWire 1.6.9: overrides em pw_stream_connect](https://github.com/PipeWire/pipewire/blob/1.6.9/src/pipewire/stream.c)
 - [Propriedades de streams, target e política](https://docs.pipewire.org/page_man_pipewire-props_7.html)
+
+## Revisão posterior — retorno e comparação
+
+O segundo ensaio em e17ada5 alcançou ROUTED em 2,594 s e o manteve nas 43
+amostras registradas. O retorno inicial falhou e exigiu recuperação adicional,
+conferida em 319,723 s. O usuário posteriormente comparou com um fone estéreo
+convencional e considerou a experiência normal: a suspeita de separação defeituosa
+não sustenta mudanças de áudio. Não há aprovação acústica definitiva.
+
+O [diagnóstico e contrato de retorno](ROLLBACK.md) substitui o controle temporário
+antigo; o [plano A–B–A](COMPARISON.md) prepara a comparação, sem executá-la.

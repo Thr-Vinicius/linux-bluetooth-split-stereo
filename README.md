@@ -235,3 +235,11 @@ trial, the selective child lifecycle correction and its evidence limits. The
 [second trial procedure](docs/SECOND-TRIAL.md) requires new authorization and uses
 normal video listening with passive monitoring. `NATIVE_DEBUG="true"` enables
 combine-stream diagnostics for a future candidate run; it does not measure sound.
+
+The [verified trial rollback contract](docs/ROLLBACK.md) addresses process-context
+identity, asynchronous removal and preservation of EasyEffects routes. Run
+`python3 tests/rollback-native.py` in isolation, or add `--easyeffects` to use a
+real EasyEffects instance with private state and dummy outputs. These tests do
+not qualify real Bluetooth or systemd control. The [controlled A–B–A proposal](docs/COMPARISON.md)
+includes known channel references and a listening worksheet; it requires separate
+authorization. [Volume artifacts](docs/VOLUME-ARTIFACTS.md) remain under investigation.
