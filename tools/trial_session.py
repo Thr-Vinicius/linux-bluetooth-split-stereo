@@ -12,7 +12,7 @@ import sys
 import time
 
 from trial_identity import identify, check_window, audit_difference, stamp, unique_node
-from trial_effects import classify as effects_classify, witness as effects_witness, EffectsPending
+from trial_effects import classify as effects_classify, witness as effects_witness, EffectsPending, dynamic_edges, playback_active
 
 from trial_support import (OwnedGroup, Resources, ReturnSupervisor, PulseRestore,
                            WatchdogLease, RollbackError, context_identity,
@@ -378,7 +378,7 @@ class AudioAdapter:
             routes[name]=stamp(sinks[name],node,props)
         return dict(sinks={n:sinks[n] for n in wanted},inputs=inputs,
                     edges=sorted(edges(graph)),default=default,route_targets=routes,
-                    effects=effects_classify(self.cfg,graph,inputs),
+                    effects=effects_classify(self.cfg,graph,inputs),dynamic_edges=dynamic_edges(self.cfg,graph),
                     hashes=self.hashes,identity=identity)
 
     def preflight(self):
@@ -398,6 +398,8 @@ class AudioAdapter:
         self.backend=SessionRestore(self.cfg,self.before,self.before,self.run,self.graph,self.watchdog)
         self.backend.media_read=self.media
         self.backend.identity_read=self.assert_identity
+        self.backend.effects_read=self.read_effects
+        self.backend.activity_read=self.read_activity
         modules=self.backend.modules()
         virtual=self.cfg['VIRTUAL_SINK']
         if len(modules)!=1 or str(self.before['sinks'][virtual]['owner_module'])!=modules[0][0]:
@@ -527,16 +529,14 @@ class AudioAdapter:
         virtual=self.cfg['VIRTUAL_SINK']
         if graph.named(virtual):
             effects_classify(self.cfg,graph,inputs)
-        elif (any(not i['corked'] and not i['properties'].get('split.owner') for i in inputs) or
-              any(p.get('media.class')=='Stream/Output/Audio' and not p.get('split.owner') and
-                  graph.objects[n]['info'].get('state')=='running' and
-                  any(int(graph.ports[a]['node.id'])==n and
-                      graph.nodes[int(graph.ports[b]['node.id'])].get('node.name')==self.cfg.get('EFFECTS_SINK','easyeffects_sink') and state=='active'
-                      for _,a,b,state in graph.links) for n,p in graph.nodes.items())):
+        elif playback_active(self.cfg,graph,inputs):
             # Candidate failure: only the previously captured, owner-verified
             # EE ports may be recovered. Idle return never invents old links.
             rows += [e for e in self.before['edges'] if e[2]==virtual]
-        self.backend.playback=dict(inputs=inputs,edges=rows)
+        active=playback_active(self.cfg,graph,inputs)
+        if graph.named(virtual):active=effects_classify(self.cfg,graph,inputs)['playback_ready']
+        self.backend.playback=dict(inputs=inputs,edges=rows,dynamic_edges=dynamic_edges(self.cfg,graph),
+                                   restore_edges=rows if active else [e for e in rows if e[2]!=virtual])
         self.backend.media_before=self.media()
 
     def media(self):
@@ -545,6 +545,13 @@ class AudioAdapter:
         prefix=['busctl','--address='+address,'--json=short']
         names=json.loads(self.run(*prefix,'call','org.freedesktop.DBus','/org/freedesktop/DBus','org.freedesktop.DBus','ListNames'))['data'][0]
         return {name:json.loads(self.run(*prefix,'get-property',name,'/org/mpris/MediaPlayer2','org.mpris.MediaPlayer2.Player','PlaybackStatus'))['data'] for name in names if name.startswith('org.mpris.MediaPlayer2.')}
+
+    def read_activity(self):
+        raw=json.loads(self.run('pactl','-f','json','list','sinks'))
+        names={s['index']:s['name'] for s in raw}
+        inputs=json.loads(self.run('pactl','-f','json','list','sink-inputs'))
+        for item in inputs:item['restore_sink']=names.get(item['sink'])
+        return playback_active(self.cfg,self.graph(),inputs)
 
     def read_effects(self):
         # EE rebuilds asynchronously on a newly active stream. Allow a short,
@@ -633,6 +640,7 @@ class SessionRestore(PulseRestore):
     identity_read=None
     capture_unknown=False
     media_before=None
+    effects_read=None
     def verify(self):
         result=super().verify()
         if self.identity_read:
@@ -642,6 +650,14 @@ class SessionRestore(PulseRestore):
             except Exception as exc:
                 result['checks']['current_identity']=False
                 result['identity_error']=str(exc)
+                result['resources_ok']=False
+        if self.effects_read:
+            try:
+                result['effects']=self.effects_read()
+                result['checks']['effects_route']=True
+            except Exception as exc:
+                result['checks']['effects_route']=False
+                result['effects_error']=str(exc)
                 result['resources_ok']=False
         if self.capture_unknown:
             result.update(applications_ok=False,playback_capture_unknown=True)

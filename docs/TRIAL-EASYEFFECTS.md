@@ -79,3 +79,10 @@ stand-in and real EE. Additional real-EE scenarios arm idle, create playback bef
 the final snapshot, create another application during B, and stop playback during B
 so EE unlinks before return. The latter must return without recreating EE inputs.
 CI installs real EE and exercises its lifecycle in isolated runtimes.
+
+Return verification records expiring edges with node serials and a verified role:
+EE-owned internal output processing, or identified application playback into EE.
+Their disappearance is not treated as loss of unrelated resources. All other
+foreign links remain mandatory. Current effective routing and ownership are checked
+again before and after watchdog resumption. If playback ends after the return
+snapshot, the EE input pair becomes optional; existing wrong links still fail.

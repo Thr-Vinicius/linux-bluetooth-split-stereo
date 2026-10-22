@@ -8,7 +8,7 @@ from unittest.mock import Mock, patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'tools'))
 import trial_session as s
-from trial_effects import classify, APP, EffectsPending
+from trial_effects import classify, APP, EffectsPending, dynamic_edges
 from test_trial_identity import fixture
 
 
@@ -169,6 +169,58 @@ class EffectsTests(unittest.TestCase):
         a.run=lambda *args:json.dumps(raw if args[-1]=='sinks' else [])
         a.capture_playback()
         self.assertIn(known,a.backend.playback['edges'])
+        self.assertIn(known,a.backend.playback['restore_edges'])
+
+    def test_only_verified_dynamic_links_may_expire_and_foreign_links_remain_required(self):
+        cfg,raw,g,mods,inputs=effects_fixture()
+        from trial_support import edges
+        ledger=dynamic_edges(cfg,g)
+        foreign=('unrelated','out','other','in')
+        rows=sorted(edges(g))+[foreign]
+        b=s.PulseRestore(cfg,{'sinks':{}},{'edges':rows,'dynamic_edges':ledger},None,lambda:g,None)
+        b.expected=set()
+        with patch('trial_support.edges',return_value={foreign}):self.assertTrue(b.routes_match())
+        with patch('trial_support.edges',return_value=set()):self.assertFalse(b.routes_match())
+        self.assertEqual({row['role'] for row in ledger},{'ee-internal','playback-input'})
+
+    def test_idle_capture_does_not_force_a_still_present_pending_teardown_pair(self):
+        cfg,raw,g,mods,inputs=effects_fixture(False,True)
+        a=s.AudioAdapter(cfg,None,{})
+        a.before={'inputs':[],'edges':[]}
+        a.backend=Mock();a.graph=lambda:g;a.media=lambda:{}
+        a.run=lambda *args:json.dumps(raw if args[-1]=='sinks' else [])
+        a.capture_playback()
+        self.assertTrue(any(e[2]=='split_lr' for e in a.backend.playback['edges']))
+        self.assertFalse(any(e[2]=='split_lr' for e in a.backend.playback['restore_edges']))
+
+    def test_playback_ending_after_capture_makes_only_ee_input_pair_optional(self):
+        cfg,raw,g,mods,inputs=effects_fixture()
+        outgoing=('split_lr','monitor_FL','left','playback_FL')
+        incoming=('ee_soe_output_level','output_FL','split_lr','playback_FL')
+        foreign=('unrelated','out','other','in')
+        b=s.PulseRestore(cfg,{'sinks':{}},{'edges':[foreign]},None,lambda:g,None)
+        b.expected={outgoing,incoming};b.activity_read=lambda:False
+        with patch('trial_support.edges',return_value={outgoing,foreign}):self.assertTrue(b.routes_match())
+        with patch('trial_support.edges',return_value={outgoing}):self.assertFalse(b.routes_match())
+        b.activity_read=lambda:True
+        with patch('trial_support.edges',return_value={outgoing,foreign}):self.assertFalse(b.routes_match())
+
+    def test_idle_return_does_not_preserve_transition_fallback_as_a_foreign_link(self):
+        cfg,raw,g,mods,inputs=effects_fixture()
+        intended=('ee_soe_output_level','output_FL','split_lr','playback_FL')
+        fallback=('ee_soe_output_level','output_FL','left','playback_FL')
+        foreign=('unrelated','out','other','in')
+        b=s.PulseRestore(cfg,{'sinks':{},'edges':[intended]},{'edges':[fallback,foreign]},None,lambda:g,None)
+        b.expected=set();b.activity_read=lambda:False
+        with patch('trial_support.edges',return_value={foreign}):self.assertTrue(b.routes_match())
+        with patch('trial_support.edges',return_value=set()):self.assertFalse(b.routes_match())
+
+    def test_dynamic_verification_still_rejects_incorrect_effective_route(self):
+        b=s.SessionRestore({'LEFT_DEVICE':'left','RIGHT_DEVICE':'right','VIRTUAL_SINK':'split_lr'},{'sinks':{}},{},None,None,None)
+        b.effects_read=Mock(side_effect=s.RollbackError('wrong destination'))
+        with patch.object(s.PulseRestore,'verify',return_value={'resources_ok':True,'applications_ok':True,'checks':{}}):
+            result=b.verify()
+        self.assertFalse(result['resources_ok']);self.assertFalse(result['checks']['effects_route'])
 
     def test_idle_return_does_not_invent_historical_input_links(self):
         cfg,raw,g,mods,inputs=effects_fixture(False,False)

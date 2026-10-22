@@ -66,8 +66,14 @@ def main():
                 return subprocess.Popen(['sleep','30'],start_new_session=True)
             self.candidate=super().launch(path)
             return self.candidate
+        def capture_playback(self):
+            super().capture_playback()
+            if scenario=='idle-during-return':time.sleep(1.5)
         def observe(self,path):
             super().observe(path)
+            if scenario=='idle-during-return' and (path/'candidate-loss.request').exists() and not self.failed:
+                self.failed=True
+                self.candidate.terminate()
             if scenario=='command-timeout':self.run('sleep','10')
             if not hasattr(self,'observed_at'):self.observed_at=time.monotonic()
             if scenario=='candidate-failure' and not self.failed and time.monotonic()-self.observed_at>.8:

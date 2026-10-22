@@ -27,7 +27,14 @@ def wait_state(cfg,c,state):
             if value['state']==state and (state!='IDLE_UNPROVEN' or value['output_links']==0):return value
         except Exception as exc:error=str(exc)
         time.sleep(.1)
-    raise AssertionError((state,error))
+    graph=c.snapshot()
+    rows=[]
+    for _,a,b,status in graph.links:
+        source=graph.nodes[int(graph.ports[a]['node.id'])]['node.name']
+        target=graph.nodes[int(graph.ports[b]['node.id'])]['node.name']
+        if source==cfg.get('EFFECTS_OUTPUT_NAME','ee_soe_output_level') or target==cfg['VIRTUAL_SINK']:
+            rows.append((source,graph.ports[a].get('audio.channel'),target,graph.ports[b].get('audio.channel'),status))
+    raise AssertionError((state,error,rows))
 
 
 def wait_idle(cfg,c):return wait_state(cfg,c,'IDLE_UNPROVEN')

@@ -50,6 +50,14 @@ def write_fixture_audio(path):
 
 
 def main():
+    if '--effects-lifecycle' in sys.argv and not os.environ.get('SPLIT_E2E_SCENARIO'):
+        # Each case models one complete trial. Removing the restored sink as
+        # cleanup between cases is not part of a real A-B-A and can change EE's
+        # selected output. Use a fresh private server/client, never retry a case.
+        for scenario in ('idle-late-start','idle-return','idle-during-return'):
+            env=dict(os.environ,SPLIT_E2E_SCENARIO=scenario)
+            subprocess.run([sys.executable,__file__,*sys.argv[1:]],env=env,check=True)
+        return
     processes = []
     with tempfile.TemporaryDirectory(prefix='split-return-') as temp:
         runtime = Path(temp)
@@ -163,7 +171,7 @@ def main():
             if '--identity-rebind' in sys.argv:scenarios=['requested']
             if '--effects-lifecycle' in sys.argv:
                 assert real_ee and '--supervisor' in sys.argv
-                scenarios=['idle-late-start','idle-return']
+                scenarios=['idle-late-start','idle-return','idle-during-return']
             if os.environ.get('SPLIT_E2E_SCENARIO'):scenarios=[os.environ['SPLIT_E2E_SCENARIO']]
             for scenario in scenarios:
                 c.command('pactl', 'load-module', 'module-null-sink', argument)

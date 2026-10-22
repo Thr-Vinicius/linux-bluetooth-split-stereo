@@ -358,16 +358,19 @@ class PulseRestore:
         for target, saved in self.before['sinks'].items():
             self.run('pactl', 'set-sink-volume', target, *[str(v['value']) for v in saved['volume'].values()])
         outgoing = [tuple(e) for e in self.before['edges'] if e[0] == name]
-        incoming = [tuple(e) for e in self.playback['edges'] if e[2] == name]
+        incoming = [tuple(e) for e in self.playback.get('restore_edges',self.playback['edges']) if e[2] == name]
+        if getattr(self,'activity_read',None) and not self.activity_read():incoming=[]
         self.expected = set(outgoing + incoming)
         # Only these preidentified EE output ports may have acquired fallback links.
-        controlled = {(e[0], e[1]) for e in incoming}
+        known_incoming={tuple(e) for e in self.before['edges'] if e[2]==name} | set(incoming)
+        controlled = {(e[0], e[1]) for e in known_incoming}
+        valid_existing=self.expected | known_incoming
         graph = self.graph()
         for link, a, b, _ in graph.links:
             pa, pb = graph.ports[a], graph.ports[b]
             row = (graph.nodes[int(pa['node.id'])]['node.name'], pa['port.name'],
                    graph.nodes[int(pb['node.id'])]['node.name'], pb['port.name'])
-            if (row[0], row[1]) in controlled and row not in self.expected:
+            if (row[0], row[1]) in controlled and row not in valid_existing:
                 self.run('pw-link', '-d', str(link))
         for source, sp, target, tp in sorted(self.expected):
             graph = self.graph()
@@ -395,14 +398,19 @@ class PulseRestore:
 
     def routes_match(self):
         current=edges(self.graph())
-        controlled={(e[0],e[1]) for e in self.expected}
-        actual={e for e in current if (e[0],e[1]) in controlled}
         virtual=self.cfg['VIRTUAL_SINK']
+        expected=self.expected
+        if getattr(self,'activity_read',None) and not self.activity_read():
+            expected={e for e in expected if e[2]!=virtual}
+        controlled={(e[0],e[1]) for e in expected}
+        actual={e for e in current if (e[0],e[1]) in controlled}
         temporary={virtual,virtual+'.left',virtual+'.right'}
+        dynamic={tuple(row['edge']) for row in self.playback.get('dynamic_edges',[])}
+        ee_sources={(e[0],e[1]) for e in self.before.get('edges',[]) if e[2]==virtual} | {(e[0],e[1]) for e in self.expected if e[2]==virtual}
         unrelated={tuple(e) for e in self.playback['edges']
-                   if e[0] not in temporary and e[2] not in temporary and
-                   (e[0],e[1]) not in controlled}
-        return actual==self.expected and unrelated<=current
+                   if e[0] not in temporary and e[2] not in temporary and tuple(e) not in dynamic and
+                   (e[0],e[1]) not in controlled and (e[0],e[1]) not in ee_sources}
+        return actual==expected and unrelated<=current
 
     def verify(self):
         import hashlib

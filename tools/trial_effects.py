@@ -136,3 +136,37 @@ def witness(cfg, graph, inputs):
                    for n,p in graph.nodes.items() if p.get('media.class')=='Stream/Output/Audio')
     pulse=sorted((str(i['properties'].get('object.serial')),i['sink'],i['corked']) for i in inputs)
     return links,streams,pulse
+
+
+def dynamic_edges(cfg, graph):
+    """Audit only: EE-owned internal output links and application -> EE links.
+
+    These may expire independently. They are never deletion/creation targets;
+    all other unrelated links remain mandatory in return verification.
+    """
+    sink, output, client = effects_owner(cfg,graph)
+    result=[]
+    for _,a,b,_ in graph.links:
+        pa,pb=graph.ports[a],graph.ports[b]
+        source,target=int(pa['node.id']),int(pb['node.id'])
+        sp,tp=graph.nodes[source],graph.nodes[target]
+        owned=lambda n,p: client is not None and str(p.get('client.id'))==client and p.get('application.id')==APP and (n==sink or p.get('node.name','').startswith('ee_soe_'))
+        internal=owned(source,sp) and owned(target,tp)
+        application=(target==sink and sp.get('media.class')=='Stream/Output/Audio' and not candidate(sp,cfg))
+        if internal or application:
+            if sp.get('object.serial') is None or tp.get('object.serial') is None:
+                raise RollbackError('Dynamic link endpoint identity missing')
+            result.append(dict(edge=[sp['node.name'],pa['port.name'],tp['node.name'],pb['port.name']],
+                               source=dict(id=source,serial=str(sp.get('object.serial'))),
+                               target=dict(id=target,serial=str(tp.get('object.serial'))),
+                               role='ee-internal' if internal else 'playback-input'))
+    return result
+
+
+def playback_active(cfg,graph,inputs):
+    if any(not i['corked'] and not candidate(i['properties'],cfg) for i in inputs):return True
+    sink,_=unique_node(graph,cfg.get('EFFECTS_SINK','easyeffects_sink'))
+    return any(p.get('media.class')=='Stream/Output/Audio' and not candidate(p,cfg) and
+               graph.objects[n]['info'].get('state')=='running' and
+               any(int(graph.ports[a]['node.id'])==n and int(graph.ports[b]['node.id'])==sink and state=='active'
+                   for _,a,b,state in graph.links) for n,p in graph.nodes.items())

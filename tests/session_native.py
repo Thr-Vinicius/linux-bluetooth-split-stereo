@@ -29,7 +29,7 @@ def run(runtime,cfg,scenario,c,independent,ee_output,historical=None):
     proc=subprocess.Popen([sys.executable,str(ROOT/'tests/session_worker.py'),str(session)],stdout=log,stderr=log,start_new_session=True)
     try:
         armed=wait(session/'state.json','ARMED')
-        if scenario in ('idle-late-start','idle-return'):
+        if scenario in ('idle-late-start','idle-return','idle-during-return'):
             before=json.loads((session/'before.json').read_text())
             assert before['effects']['state']=='IDLE_UNPROVEN'
             import effects_native
@@ -62,16 +62,17 @@ def run(runtime,cfg,scenario,c,independent,ee_output,historical=None):
                     streams=[i for i in inputs if i['properties'].get('node.name')=='aba_fixture_player']
                     assert len(streams)==1 and not streams[0]['corked'],streams
                     (session/'playback.json').write_text(json.dumps(streams,indent=2)+'\n')
-                    if scenario=='idle-return':
+                    if scenario in ('idle-return','idle-during-return'):
                         player.terminate();player.wait(timeout=3)
                         if late is not None:late.terminate();late.wait(timeout=3)
                         import effects_native
-                        effects_native.wait_idle(cfg,c)
+                        if scenario=='idle-return':effects_native.wait_idle(cfg,c)
+                        if scenario=='idle-during-return':(session/'candidate-loss.request').touch()
                     if not external and scenario in ('requested','return-failure','return-persistent-failure','requester-exit','idle-late-start','idle-return'):
                         subprocess.run([sys.executable,str(ROOT/'tools/request-return.py'),'--session',str(session)],check=True,stdout=log)
                     if scenario=='signal':proc.send_signal(15)
                     proc.wait(timeout=30)
-                    if scenario!='idle-return':assert player.poll() is None, 'Fixture PCM ended before final verification'
+                    if scenario not in ('idle-return','idle-during-return'):assert player.poll() is None, 'Fixture PCM ended before final verification'
                 finally:
                     player.terminate();player.wait(timeout=3)
         proc.wait(timeout=30)
@@ -89,8 +90,8 @@ def run(runtime,cfg,scenario,c,independent,ee_output,historical=None):
             assert result['owner_context']==armed['owner_context'],result
         if scenario=='return-failure':assert result['attempts']==2,result
         if scenario=='deadline':assert result['reason']=='deadline' and result['elapsed']>=8,result
-        if scenario in ('swap-failure','readiness-timeout','candidate-failure','command-timeout'):assert result['reason']=='failure',result
-        if scenario=='idle-return':
+        if scenario in ('swap-failure','readiness-timeout','candidate-failure','command-timeout','idle-during-return'):assert result['reason']=='failure',result
+        if scenario in ('idle-return','idle-during-return'):
             assert not any(e[2]==cfg['VIRTUAL_SINK'] for e in __import__('trial_support').edges(c.snapshot()))
             commands=[json.loads(line)['args'] for line in (session/'commands.jsonl').read_text().splitlines() if 'args' in json.loads(line)]
             assert not any(a[:2]==['pactl','move-sink-input'] for a in commands)
