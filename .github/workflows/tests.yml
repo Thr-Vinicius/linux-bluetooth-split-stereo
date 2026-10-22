@@ -1,0 +1,40 @@
+name: Isolated audio tests
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Unit tests and shell analysis
+        run: |
+          python3 -m unittest discover -s tests -v
+          shellcheck *.sh legacy/*.sh
+          for script in *.sh legacy/*.sh; do bash -n "$script"; done
+          git diff --check
+  native:
+    runs-on: ubuntu-latest
+    # Native tests target the modern PipeWire / WirePlumber 0.5 environment.
+    # Ubuntu's PipeWire 1.0.5 / WP 0.4 did not pass the standalone port test.
+    container: archlinux:base
+    steps:
+      - name: Install native test tools
+        run: pacman -Syu --noconfirm python pipewire pipewire-pulse wireplumber libpulse dbus git easyeffects
+      - uses: actions/checkout@v4
+      - name: Private PipeWire and WirePlumber integration
+        env:
+          SPLIT_TEST_WIREPLUMBER: '1'
+          SPLIT_TEST_STARTUP_DELAY: '2'
+          SPLIT_TEST_MAC_TARGETS: '1'
+        run: |
+          pipewire --version
+          wireplumber --version
+          python tests/native-smoke.py
+          python tests/rollback-native.py
+          python tests/rollback-native.py --supervisor
+          python tests/rollback-native.py --supervisor --identity-rebind
+          python tests/rollback-native.py --supervisor --easyeffects
+          python tests/rollback-native.py --supervisor --easyeffects --effects-lifecycle

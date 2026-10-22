@@ -1,13 +1,16 @@
 [Unit]
-Description=Automatic Bluetooth split stereo watchdog
-After=pipewire.service wireplumber.service
-Wants=pipewire.service wireplumber.service
+Description=Bluetooth split stereo native audio supervisor
+After=pipewire.service pipewire-pulse.service wireplumber.service
+Wants=pipewire.service pipewire-pulse.service wireplumber.service
 
 [Service]
 Type=simple
 ExecStart=%h/.local/bin/fones-watchdog.sh
 Restart=on-failure
-RestartSec=3
+RestartSec=5
+TimeoutStopSec=10
+UMask=0077
+NoNewPrivileges=yes
 
 [Install]
 WantedBy=default.target

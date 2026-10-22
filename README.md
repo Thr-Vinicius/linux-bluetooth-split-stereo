@@ -1,333 +1,260 @@
 # Linux Bluetooth Split Stereo
 
-Use two independent Bluetooth audio devices as a single stereo pair on Linux with PipeWire.
+Use two independent Bluetooth devices as a stereo pair on Linux with PipeWire,
+WirePlumber and BlueZ. Only FL reaches the configured left device; only FR reaches
+the right. A selected channel plays through both inputs of a stereo device or the
+single input of a mono device.
 
-The left audio channel is sent to one Bluetooth device and the right channel is sent to the other.
+This version replaces Bluetooth reconnect-based “resync” with a supervised native
+`libpipewire-module-combine-stream` client. It repairs missing links without
+recreating healthy ones. **Graph health is not proof of acoustic synchronization.**
 
-```text
-System audio
-├── Left channel  → Bluetooth device 1
-└── Right channel → Bluetooth device 2
-```
-
-## Features
-
-- Creates a virtual stereo output named `split_lr`
-- Routes each stereo channel to a different Bluetooth device
-- Detects device connection and disconnection automatically
-- Performs a full resync when a new pair connects
-- Avoids unnecessary reconnection after a service restart
-- Uses one connected headphone directly
-- Restores the normal computer output when both headphones disconnect
-- Moves active audio streams to the selected output
-- Keeps the physical devices at a fixed volume in split mode
-- Supports manual resynchronization requests
-- Runs as a persistent systemd user service
-
-## Routing behavior
-
-The watchdog manages four main situations:
+## Architecture and behavior
 
 ```text
-Two headphones — new connection
-└── Full Bluetooth resync
-    └── Activate split_lr
-
-Two headphones — already synchronized
-└── Restore split routing without reconnecting
-
-One headphone
-└── Use that headphone directly
-    └── Apply NON_SPLIT_VOLUME once
-
-No Bluetooth headphones
-└── Restore the normal computer output
-    └── Apply NON_SPLIT_VOLUME once
+Applications following the selected output
+                  │
+        split_lr (FL / FR)
+          native combine-stream
+          │                 │
+    left MONO stream   right MONO stream
+          │                 │
+     left FL + FR       right FL + FR
+       (or MONO)           (or MONO)
 ```
 
-The one-headphone and normal-output volume is applied only when the route changes.
+PipeWire owns buffering, latency reporting and adaptive resampling. The controller
+requests each native child through combine-stream’s on-demand metadata API as its
+physical target appears, and controls only the links from those two output streams.
+A missing/error child is retried independently; a healthy child and the virtual
+sink are preserved. Streams cannot automatically fall back to the wrong
+device. No common hardware clock is fabricated. No forced quantum, sample rate,
+codec, profile or Bluetooth reconnect is used.
 
-The watchdog does not permanently lock that volume. Manual volume changes remain possible afterward.
+The virtual sink remains present while the supervisor runs, including when both
+headphones are absent. The supervisor uses Pulse sink/card/server events for
+availability changes and a ten-second graph audit for lost links; event bursts
+are coalesced. It does not measure latency periodically. In a healthy steady state
+there are no routing, default or volume writes.
 
-## Why a new connection is reconnected once
+| Observed graph | State | Default output policy when still managed |
+| --- | --- | --- |
+| Both devices and all required links | ROUTED | `split_lr` |
+| Only one device, its links valid | PARTIAL | That physical device, normal full program audio |
+| Neither device | DISCONNECTED | Configured/saved normal output |
+| Missing, wrong, duplicate or negotiating links | DEGRADED / error until repaired | Do not select an unverified split |
+| Server failure, ambiguity, unsupported ports, command failure | ERROR | Bounded retry, no Bluetooth action |
 
-Simply detecting both PipeWire sinks does not guarantee that two independent Bluetooth devices started with matching latency.
+ROUTED means the software graph is correct; `acoustic_sync` is always
+`unmeasured`. Suspended devices and paused links are normal when no audio plays.
+Explicit node/link errors are unhealthy. Availability here means an audio node
+exists, not that BlueZ reports a usable A2DP transport or that sound was heard.
 
-For this reason, a new pair is deliberately disconnected and reconnected once before the stereo routing is activated.
-
-A synchronized connection is identified by the current PipeWire sink indexes. Restarting the watchdog while the same pair remains connected therefore restores the split without another Bluetooth reconnection.
+Automatic default selection runs on presence changes, not continuously. A manual
+choice of another output is respected, including across service restarts. If
+WirePlumber automatically selects another output while a device disappears, the
+controller conservatively respects that choice too. Select `split_lr` manually
+to use the pair again. `AUTO_DEFAULT="false"` disables default changes entirely.
+Existing application streams are never forcibly moved: apps pinned to another
+output stay there; apps pinned to a disconnected split may need manual rerouting.
 
 ## Requirements
 
-- Bash
-- PipeWire
-- PipeWire PulseAudio compatibility
-- WirePlumber
-- BlueZ
-- `bluetoothctl`
-- `pactl`
-- `pw-link`
-- `flock`
-- `playerctl` is optional
+- Linux user session with `XDG_RUNTIME_DIR`
+- PipeWire with `libpipewire-module-combine-stream`, `pipewire`, `pw-dump`, `pw-link`, `pw-metadata`
+- Exactly one session `default` metadata store (normally provided by WirePlumber)
+- WirePlumber, BlueZ, paired headphones and PipeWire Pulse compatibility (`pactl`)
+- Python 3.9+ (standard library only), Bash
+- Optional standalone media shortcut: `playerctl`, `flock`, `timeout`, GNU `date/stat`
 
-Arch Linux example:
+Tested in isolation with **PipeWire 1.6.9 / WirePlumber 0.5.17 / Python 3.14.7**. Older versions have
+not been qualified; the standalone native test failed with PipeWire 1.0.5 /
+WirePlumber 0.4.17 in Ubuntu CI because the virtual input ports were missing.
+Do not treat that older stack as supported by this revision. Check that your distribution includes the combine-stream
+module; a missing module causes a visible error rather than silently falling
+back to the old architecture. WirePlumber policy restart was tested against dummy sinks, with hardware
+monitors disabled and a private session bus. BlueZ/hardware integration remains
+to be tested.
+
+On Arch Linux the audio packages are `pipewire`, `pipewire-pulse`, `wireplumber`,
+`bluez`, `bluez-utils`, and `libpulse`; Python and Bash are also required. Keep the
+normal per-user audio services enabled. Pair/connect devices using your desktop
+Bluetooth UI or `bluetoothctl`. This tool does not pair, trust, change profiles,
+or automatically reconnect a device you disconnected.
+
+## Install and try the review branch
+
+Use the branch under review; do not install over a working setup without a backup.
+The first authorized temporary hardware trial failed before test playback and was
+rolled back. The current revision has only isolated validation; permanent
+installation and acoustic qualification remain pending.
 
 ```bash
-sudo pacman -S pipewire pipewire-pulse wireplumber bluez bluez-utils
-```
-
-## Installation
-
-Clone the repository:
-
-```bash
-git clone https://github.com/Thr-Vinicius/linux-bluetooth-split-stereo.git
+git clone --branch refactor/stable-native-split \
+  https://github.com/Thr-Vinicius/linux-bluetooth-split-stereo.git
 cd linux-bluetooth-split-stereo
+
+# Existing users: first follow docs/MIGRATION.md.
+install -d ~/.local/bin ~/.config/linux-bluetooth-split-stereo
+install -m755 bluetooth-split-controller.py split-fones.sh resync-fones.sh \
+  fones-watchdog.sh ~/.local/bin/
+# Do not overwrite an existing config:
+if [ ! -e ~/.config/linux-bluetooth-split-stereo/config ]; then
+  install -m600 config.example ~/.config/linux-bluetooth-split-stereo/config
+fi
 ```
 
-Install the scripts:
+Edit `~/.config/linux-bluetooth-split-stereo/config`. Find addresses with
+`bluetoothctl devices`; find exact node names and your normal output with
+`pactl list short sinks`. Configure two different real MAC addresses, or omit MACs
+and use exact `LEFT_DEVICE` / `RIGHT_DEVICE` names. MAC matching survives suffix
+changes; if multiple sinks match one MAC, configuration stops with an error.
+Do not leave the example MACs in place. Set `FALLBACK_SINK` to your normal output
+when possible; otherwise the current normal default is saved, then a built-in
+ALSA output is preferred. Unrelated virtual outputs are not arbitrarily selected.
+
+Config files are **assignments, not shell programs**. No command substitution,
+shell variable expansion or `source` is supported. `BLUETOOTH_SPLIT_CONFIG` can
+point to an alternative file; standard XDG config paths are supported.
+
+First try in the foreground at a low physical listening volume:
 
 ```bash
-install -Dm755 split-fones.sh \
-  ~/.local/bin/split-fones.sh
-
-install -Dm755 resync-fones.sh \
-  ~/.local/bin/resync-fones.sh
-
-install -Dm755 fones-watchdog.sh \
-  ~/.local/bin/fones-watchdog.sh
+~/.local/bin/fones-watchdog.sh
 ```
 
-Install the configuration:
+Use another terminal to inspect or repair:
 
 ```bash
-install -Dm644 config.example \
-  ~/.config/linux-bluetooth-split-stereo/config
+python3 ~/.local/bin/bluetooth-split-controller.py status
+~/.local/bin/split-fones.sh
+~/.local/bin/resync-fones.sh
 ```
 
-Edit it:
+Existing resolvers may also create
+`$XDG_RUNTIME_DIR/fones-watchdog-resync-request-$UID.flag`. The owner accepts a
+regular file owned by this user and acknowledges it after route validation. It
+requests route repair only, never transport or acoustic resynchronization.
 
-```bash
-nano ~/.config/linux-bluetooth-split-stereo/config
-```
+Both repair scripts now perform the same non-disconnecting, idempotent route
+check. They need the foreground supervisor or installed service to own the native
+sink; they do not start a hidden background process. `resync-fones.sh` cannot
+measure or promise acoustic resynchronization. Ctrl+C stops the foreground
+supervisor and its native client. Starting/stopping/restarting the owner removes
+and recreates its virtual sink, so this explicit operation may interrupt audio;
+ordinary link repair and device hotplug preserve the owner and healthy links.
 
-## Finding the device identifiers
-
-Connect the Bluetooth devices and list the PipeWire sinks:
-
-```bash
-pactl list short sinks
-```
-
-Typical output:
-
-```text
-bluez_output.XX_XX_XX_XX_XX_XX.1
-bluez_output.YY_YY_YY_YY_YY_YY.1
-```
-
-Use those names for:
-
-```bash
-LEFT_DEVICE="bluez_output.XX_XX_XX_XX_XX_XX.1"
-RIGHT_DEVICE="bluez_output.YY_YY_YY_YY_YY_YY.1"
-```
-
-List Bluetooth devices:
-
-```bash
-bluetoothctl devices
-```
-
-Use their addresses for:
-
-```bash
-LEFT_MAC="XX:XX:XX:XX:XX:XX"
-RIGHT_MAC="YY:YY:YY:YY:YY:YY"
-```
-
-## Volume configuration
-
-The physical device volume used in split mode:
-
-```bash
-PHYSICAL_VOLUME="90%"
-PHYSICAL_BASE=90
-```
-
-These values should represent the same percentage.
-
-The initial virtual output volume:
-
-```bash
-VIRTUAL_VOLUME="40%"
-```
-
-The volume applied once when only one headphone or no Bluetooth headphones are connected:
-
-```bash
-NON_SPLIT_VOLUME=30
-```
-
-## Normal output detection
-
-Leave this empty for automatic detection:
-
-```bash
-FALLBACK_SINK=""
-```
-
-The watchdog prefers a non-Bluetooth `analog-stereo` output when one is available.
-
-A specific output may also be configured:
-
-```bash
-FALLBACK_SINK="alsa_output.pci-0000_00_00.0.analog-stereo"
-```
-
-## Automatic startup
-
-Install the systemd user service:
+After stopping the foreground instance, install the user service:
 
 ```bash
 install -Dm644 systemd/fones-watchdog.service \
   ~/.config/systemd/user/fones-watchdog.service
-```
-
-Reload systemd:
-
-```bash
 systemctl --user daemon-reload
-```
-
-Enable and start the service:
-
-```bash
 systemctl --user enable --now fones-watchdog.service
-```
-
-Check its status:
-
-```bash
-systemctl --user status fones-watchdog.service
-```
-
-Follow its logs:
-
-```bash
 journalctl --user -u fones-watchdog.service -f
 ```
 
-Stop following the logs with `Ctrl+C`. This does not stop the service.
+Do not run the legacy watcher, old watchdog or duplicate native configs alongside
+this service. Lifetime and operation locks prevent concurrent new controllers.
+All runtime files live inside a private directory under `XDG_RUNTIME_DIR`; there
+are no shared predictable `/tmp` control files.
 
-## Manual split routing
+## Volume and playback
 
-Apply the split routing without reconnecting the devices:
+Physical volume and mute settings are never written. Each headphone retains
+independent control. The native virtual sink starts with linear gain 0.064
+(approximately 40% on the Pulse cubic scale); WirePlumber's normal saved-property
+policy may restore your previous setting. Check the level before listening.
+The controller does not continuously restore or enforce it, and does not change
+volumes when recovering links or selecting outputs. Persistence across full audio
+server restarts depends on the session manager's restore policy.
 
-```bash
-~/.local/bin/split-fones.sh
-```
+No recovery path calls `playerctl`, pauses media, seeks or resumes playback. The
+optional `smart-prev.sh` is a separate, explicit user shortcut. Its optional
+`PLAYER` environment variable selects one player; it is not invoked by recovery.
 
-## Manual resynchronization
+## Timing limits and compensation
 
-Run the resync script directly:
+`LATENCY_COMPENSATE="true"` enables native delay buffers to align **reported**
+stream delays. It can help with exposed differences between streams; firmware
+buffers, transport reporting errors and acoustic processing remain outside this
+measurement. Enabling it is not evidence of an audible improvement on your pair.
+If delay reports change during playback, native buffers may be resized; compare
+`false` on your hardware if you hear artifacts. Change this setting with playback
+stopped and restart the service once to apply it.
 
-```bash
-~/.local/bin/resync-fones.sh
-```
+Fixed acoustic offset and drift are separate problems. A fixed offset needs an
+external two-channel acoustic measurement; drift concerns different clock rates.
+PipeWire handles clock adaptation with its resamplers. This tool adds no custom
+rate correction loop or continuous latency probe and does not pretend unrelated
+headphones share a clock. No manual fixed acoustic correction is implemented in
+this revision. See [the architecture decision](docs/ARCHITECTURE.md) and
+[hardware test procedure](docs/VALIDATION.md) for limits and comparison criteria.
 
-When the watchdog is running, the preferred method is to send it a request:
-
-```bash
-touch "${XDG_RUNTIME_DIR:-/tmp}/fones-watchdog-resync-request-${UID}.flag"
-```
-
-### Hyprland shortcut
-
-On this system, manual resynchronization is also mapped to:
-
-```text
-SUPER + SHIFT + R
-```
-
-The shortcut calls:
-
-`~/.local/bin/michael-resolver`
-
-The resolver checks whether both configured headphones are connected and then sends a resynchronization request to the watchdog.
-
-The watchdog then performs one controlled resync and restores `split_lr`.
-
-This request mechanism can be integrated with voice assistants, keyboard shortcuts or other automation tools.
-
-## Useful commands
-
-Current default output:
+## Diagnostics and tests
 
 ```bash
-pactl get-default-sink
-```
-
-Available outputs:
-
-```bash
-pactl list short sinks
-```
-
-PipeWire links:
-
-```bash
+python3 ~/.local/bin/bluetooth-split-controller.py status
 pw-link -l
+pactl list short sinks
+journalctl --user -u fones-watchdog.service -n 50 --no-pager
+
+# From the checkout, no real devices or services are changed:
+python3 -m unittest discover -s tests -v
+python3 tests/native-smoke.py
+shellcheck *.sh legacy/*.sh
 ```
 
-Relevant split and Bluetooth links:
+The native smoke test uses its own temporary PipeWire socket, dummy sinks and
+raw sample capture and a private Pulse server. It requires the normal PipeWire client config in
+`/usr/share/pipewire/client.conf` and the native tools. It never uses your session's
+Bluetooth or WirePlumber instance. Optional policy-only restart test:
+`SPLIT_TEST_WIREPLUMBER=1 python3 tests/native-smoke.py` (requires WirePlumber 0.5
+and dbus-daemon). Use `SPLIT_AUDIO_SECONDS=10` for a longer software sample.
+Software tests do not validate acoustic sync,
+radio reliability, codec buffering or hours-long listening stability.
 
-```bash
-pw-link -l | grep -E 'split_lr|bluez_output'
-```
+For an ERROR, check the configured identifiers, active graphical session, module
+availability and mono/stereo ports before restarting anything. WirePlumber's
+Bluetooth monitor follows active-session/logind rules; changing seats can make
+audio nodes disappear. A BlueZ connection alone does not prove an audio sink is
+ready. This tool retries graph failures without resetting Bluetooth or WirePlumber.
+Unsupported multi-channel layouts and ambiguous names fail visibly. Logs report
+state changes/errors, not every healthy tick, and use the system journal.
 
-Recent watchdog logs:
+The [audit](docs/AUDIT.md) distinguishes observed defects from hardware-dependent
+risks. The [migration guide](docs/MIGRATION.md) includes backup and rollback.
+The former bounded startup waiter remains in `legacy/auto-split-fones.sh`; it now
+waits for verified routes from the supervisor. LICENSE remains MIT.
 
-```bash
-journalctl --user -u fones-watchdog.service -n 30 --no-pager
-```
+For staged real-device qualification and a finite passive observation command,
+see [the qualification record](docs/HOMOLOGATION.md).
 
-Restart the watchdog:
+The [native startup investigation](docs/NATIVE-STARTUP.md) records the failed real
+trial, the selective child lifecycle correction and its evidence limits. The
+[second trial procedure](docs/SECOND-TRIAL.md) requires new authorization and uses
+normal video listening with passive monitoring. `NATIVE_DEBUG="true"` enables
+combine-stream diagnostics for a future candidate run; it does not measure sound.
 
-```bash
-systemctl --user restart fones-watchdog.service
-```
+The [verified trial rollback contract](docs/ROLLBACK.md) addresses process-context
+identity, asynchronous removal and preservation of EasyEffects routes. Run
+`python3 tests/rollback-native.py` in isolation, or add `--easyeffects` to use a
+real EasyEffects instance with private state and dummy outputs. These tests do
+not qualify real Bluetooth or systemd control. The [controlled A–B–A proposal](docs/COMPARISON.md)
+includes known channel references and a listening worksheet; it requires separate
+authorization. [Volume artifacts](docs/VOLUME-ARTIFACTS.md) remain under investigation.
 
-## Synchronization limitations
+The [integrated trial supervisor](docs/TRIAL-SUPERVISOR.md) now exercises the whole
+swap/monitor/return lifecycle in private servers. `python3 tests/rollback-native.py
+--supervisor` covers requests, deadlines, candidate exit and partial/permanent
+restoration failures; add `--easyeffects` for real private EasyEffects.
+`tools/trial-supervisor.py --prepare` is read-only for the live session. Execution
+requires separate explicit authorization and a persistent owner; do not run a real
+trial as part of preparation.
 
-This project combines two independent Bluetooth audio devices.
+[Trial identity revalidation](docs/TRIAL-IDENTITY.md) separates stable MAC/module/
+service policy from current PipeWire IDs. New sessions can have new IDs and levels;
+the final current snapshot drives restoration, and substitutions within the window
+block writes. This affects trial infrastructure only, not regular audio processing.
 
-Each device has its own hardware clock, Bluetooth buffer, codec implementation and internal processing delay. Small latency differences or synchronization drift may therefore occur.
-
-Results may vary depending on:
-
-- headphone firmware
-- Bluetooth codec
-- Bluetooth adapter
-- radio interference
-- BlueZ timing
-- PipeWire timing
-- system load
-
-The full resynchronization procedure usually reduces the difference significantly, but sample-perfect synchronization between unrelated Bluetooth devices cannot be guaranteed.
-
-A result that is excellent on one pair of devices may be slightly different on another pair or after a later connection.
-
-## Legacy script
-
-The former one-shot startup script is preserved under:
-
-```text
-legacy/auto-split-fones.sh
-```
-
-The persistent connection-aware watchdog replaces it for normal use.
-
-## License
-
-MIT
+A preparação A–B–A distingue ociosidade legítima do EasyEffects de falha durante áudio ativo: [critérios e retorno dinâmico](docs/TRIAL-EASYEFFECTS.md). Um plano ocioso não autoriza intervenção.

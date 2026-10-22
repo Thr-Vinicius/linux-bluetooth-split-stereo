@@ -1,46 +1,30 @@
-# PipeWire sink names.
-# Find them with:
-# pactl list short sinks
+# Declarative KEY="value" assignments; no shell commands or expansions.
+# Prefer MAC matching: tolerates node suffix changes after reconnect/profile change.
+# Use two DIFFERENT paired Bluetooth addresses (bluetoothctl devices).
+LEFT_MAC="AA:BB:CC:DD:EE:01"
+RIGHT_MAC="AA:BB:CC:DD:EE:02"
 
-LEFT_DEVICE="bluez_output.XX_XX_XX_XX_XX_XX.1"
-RIGHT_DEVICE="bluez_output.YY_YY_YY_YY_YY_YY.1"
-
-# Bluetooth MAC addresses.
-# Find them with:
-# bluetoothctl devices
-
-LEFT_MAC="XX:XX:XX:XX:XX:XX"
-RIGHT_MAC="YY:YY:YY:YY:YY:YY"
-
-# Virtual stereo output.
+# Alternatively remove the MAC assignment for that side and set an exact node.name:
+# LEFT_DEVICE="bluez_output.AA_BB_CC_DD_EE_01.1"
+# RIGHT_DEVICE="bluez_output.AA_BB_CC_DD_EE_02.1"
+# MAC takes precedence when both identifiers are present.
 VIRTUAL_SINK="split_lr"
 
-# Normal non-Bluetooth output.
-# Leave empty to detect it automatically.
+# Native delay buffers based on reported stream latency, not acoustic measurements.
+# If testing shows audible delay updates with your devices, try false and compare.
+LATENCY_COMPENSATE="true"
+
+# Select outputs on presence transitions only; respect manual default changes.
+# No volume/mute writes and no moving individual application streams.
+AUTO_DEFAULT="true"
+# Recommended: explicitly choose your normal output (pactl list short sinks).
 FALLBACK_SINK=""
 
-# Physical device volume used in split mode.
-PHYSICAL_VOLUME="90%"
-PHYSICAL_BASE=90
+# Events accelerate availability changes; this audit catches lost PipeWire links.
+CHECK_INTERVAL=10
+# Bounded retry after command, graph or server failure (no Bluetooth reconnection).
+ACTION_RETRY_DELAY=5
 
-# Initial virtual split volume.
-VIRTUAL_VOLUME="40%"
-
-# Applied once when routing to one headphone or the normal output.
-# The watchdog does not permanently lock the volume.
-NON_SPLIT_VOLUME=30
-
-# Watchdog timing.
-CHECK_INTERVAL=1
-IDLE_CHECK_INTERVAL=3
-ACTION_RETRY_DELAY=12
-READY_TIMEOUT=20
-
-# Bluetooth reconnection timing used by resync-fones.sh.
-CONNECT_TIMEOUT=25
-CONNECT_RETRY_INTERVAL=3
-POST_CONNECT_SETTLE=2
-
-# Optional external resync wrapper.
-# Leave empty for standalone operation.
-RESOLVER=""
+# Optional diagnostics for the candidate native client; may log device identifiers.
+# Apply only on its next explicit start. No acoustic measurement is performed.
+NATIVE_DEBUG="false"

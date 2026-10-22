@@ -1,25 +1,17 @@
-Example output from:
+Conceptual native graph (actual port labels can vary; inspect pw-dump/pw-link -l).
 
-pw-link -o | grep split_lr
-pw-link -i | grep bluez_output
+Applications -> split_lr FL/FR inputs
+Native remap: split_lr FL -> split_lr.left MONO
+              split_lr FR -> split_lr.right MONO
 
-split_lr:monitor_FL
-split_lr:monitor_FR
-bluez_output.XX_XX_XX_XX_XX_XX.1:playback_FL
-bluez_output.XX_XX_XX_XX_XX_XX.1:playback_FR
-bluez_output.YY_YY_YY_YY_YY_YY.1:playback_FL
-bluez_output.YY_YY_YY_YY_YY_YY.1:playback_FR
+split_lr.left:output_MONO
+  -> bluez_output.AA_BB_CC_DD_EE_01.1:playback_FL
+  -> bluez_output.AA_BB_CC_DD_EE_01.1:playback_FR
 
-Example routing:
+split_lr.right:output_MONO
+  -> bluez_output.AA_BB_CC_DD_EE_02.1:playback_MONO
 
-Left channel:
-
-split_lr:monitor_FL
-  -> bluez_output.XX_XX_XX_XX_XX_XX.1:playback_FL
-  -> bluez_output.XX_XX_XX_XX_XX_XX.1:playback_FR
-
-Right channel:
-
-split_lr:monitor_FR
-  -> bluez_output.YY_YY_YY_YY_YY_YY.1:playback_FL
-  -> bluez_output.YY_YY_YY_YY_YY_YY.1:playback_FR
+A stereo right device instead receives output_MONO on both playback_FL/FR.
+No link should go from split_lr.left to the right device or vice versa.
+The controller discovers ports by audio.channel, not these example labels.
+The native internal FL/FR remapping is not a separate pw-link connection.

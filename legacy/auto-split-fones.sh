@@ -1,33 +1,13 @@
 #!/usr/bin/env bash
-
-# Linux Bluetooth Split Stereo - Auto Start Script
-# Waits for two Bluetooth headphones to appear,
-# then applies the split stereo routing.
-
-LEFT_DEVICE="bluez_output.YOUR_LEFT_DEVICE.1"
-RIGHT_DEVICE="bluez_output.YOUR_RIGHT_DEVICE.1"
-SPLIT_SCRIPT="./split-fones.sh"
-
-MAX_TRIES=60
-SLEEP_TIME=2
-
-echo "Waiting for Bluetooth headphones..."
-
-if [ ! -x "$SPLIT_SCRIPT" ]; then
-    echo "Error: split script not found or not executable: $SPLIT_SCRIPT"
-    echo "Run: chmod +x split-fones.sh"
-    exit 1
-fi
-
-for i in $(seq 1 "$MAX_TRIES"); do
-    if pactl list short sinks | grep -q "$LEFT_DEVICE" && pactl list short sinks | grep -q "$RIGHT_DEVICE"; then
-        echo "Both headphones found. Applying split stereo..."
-        "$SPLIT_SCRIPT"
-        exit 0
+set -euo pipefail
+# Compatibility one-shot waiter. The native owner/watchdog must already run.
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+for ((attempt = 0; attempt < 60; attempt++)); do
+    if status=$(python3 "$SCRIPT_DIR/bluetooth-split-controller.py" status 2>/dev/null) &&
+       [[ "$status" == *'"state": "ROUTED"'* ]]; then
+        exec "$SCRIPT_DIR/split-fones.sh"
     fi
-
-    sleep "$SLEEP_TIME"
+    sleep 2
 done
-
-echo "Headphones were not found. Split stereo was not applied."
+printf '%s\n' 'Both headphone routes did not become ready within 120 seconds.' >&2
 exit 1
