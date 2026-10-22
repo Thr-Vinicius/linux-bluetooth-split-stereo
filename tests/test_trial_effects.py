@@ -159,6 +159,17 @@ class EffectsTests(unittest.TestCase):
             with self.assertRaises(EffectsPending):a.read_effects()
         self.assertEqual(a.read_effects_once.call_count,2)
 
+    def test_native_only_playback_recovers_known_route_after_candidate_loss(self):
+        cfg,raw,g,mods,inputs=effects_fixture(True,False)
+        g.nodes.pop(1030)
+        a=s.AudioAdapter(cfg,None,{})
+        known=['ee_soe_output_level','output_FL','split_lr','playback_FL']
+        a.before={'inputs':[],'edges':[known]}
+        a.backend=Mock();a.graph=lambda:g;a.media=lambda:{}
+        a.run=lambda *args:json.dumps(raw if args[-1]=='sinks' else [])
+        a.capture_playback()
+        self.assertIn(known,a.backend.playback['edges'])
+
     def test_idle_return_does_not_invent_historical_input_links(self):
         cfg,raw,g,mods,inputs=effects_fixture(False,False)
         a=s.AudioAdapter(cfg,None,{})

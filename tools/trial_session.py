@@ -527,7 +527,12 @@ class AudioAdapter:
         virtual=self.cfg['VIRTUAL_SINK']
         if graph.named(virtual):
             effects_classify(self.cfg,graph,inputs)
-        elif any(not i['corked'] and not i['properties'].get('split.owner') for i in inputs):
+        elif (any(not i['corked'] and not i['properties'].get('split.owner') for i in inputs) or
+              any(p.get('media.class')=='Stream/Output/Audio' and not p.get('split.owner') and
+                  graph.objects[n]['info'].get('state')=='running' and
+                  any(int(graph.ports[a]['node.id'])==n and
+                      graph.nodes[int(graph.ports[b]['node.id'])].get('node.name')==self.cfg.get('EFFECTS_SINK','easyeffects_sink') and state=='active'
+                      for _,a,b,state in graph.links) for n,p in graph.nodes.items())):
             # Candidate failure: only the previously captured, owner-verified
             # EE ports may be recovered. Idle return never invents old links.
             rows += [e for e in self.before['edges'] if e[2]==virtual]
