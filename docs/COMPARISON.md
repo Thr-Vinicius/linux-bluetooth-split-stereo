@@ -15,7 +15,10 @@ O objetivo é verificar consistência e recuperação, sem presumir superioridad
   argumentos e owner_module do único null sink, canais/volumes/mute, padrão,
   dispositivos, grafo e links, preset/rota EasyEffects e aplicativos/MPRIS.
   Estado diferente do backup antigo exige nova captura; não sobrescrever mudanças
-  legítimas com uma cópia histórica.
+  legítimas com uma cópia histórica. A [política de identidade](TRIAL-IDENTITY.md)
+  valida MAC, propriedades, módulo e processo; índices/seriais e níveis anteriores
+  são apenas auditoria. Capturar os valores atuais antes da intervenção e fixar
+  essas identidades somente durante a janela.
 - Preparar diretório candidato separado e token único; AUTO_DEFAULT=false,
   diagnóstico nativo ativo. Fixar opções, trecho, níveis, controle de volume,
   processamento e caminho aplicativo → EasyEffects → split para A e B.

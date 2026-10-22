@@ -54,6 +54,7 @@ def main():
     assert runtime.name.startswith('split-return-') and runtime.parent==Path('/tmp')
     assert os.environ['PULSE_SERVER']=='unix:'+str(runtime)+'/pulse/native'
     scenario=cfg.pop('scenario')
+    historical=cfg.pop('historical',None)
     watchdog=PrivateWatchdog(path)
     class FaultAdapter(AudioAdapter):
         failed=False
@@ -81,7 +82,10 @@ def main():
             return super().run(*args)
     adapter=FaultAdapter(cfg,watchdog,{})
     adapter.path=path
-    session=Session(path,adapter,maximum=60 if os.environ.get('SPLIT_EXTERNAL_IPC') else 12,return_after=45 if os.environ.get('SPLIT_EXTERNAL_IPC') else 6,ready_timeout=3)
+    if historical is not None:
+        adapter.expected_policy=historical["identity"]["stable"]
+        adapter.history=historical
+    session=Session(path,adapter,maximum=60 if os.environ.get('SPLIT_EXTERNAL_IPC') else 24,return_after=45 if os.environ.get('SPLIT_EXTERNAL_IPC') else 8,ready_timeout=4)
     for sig in (signal.SIGTERM,signal.SIGINT,signal.SIGHUP):
         signal.signal(sig,lambda *_:setattr(session,'stop_requested',True))
     try:

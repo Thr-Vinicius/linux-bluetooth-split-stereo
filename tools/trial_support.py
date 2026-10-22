@@ -220,7 +220,7 @@ class ReturnSupervisor:
                 # Verify again AFTER resume; a successful thaw is not proof.
                 verification = self.backend.verify()
                 if not verification['resources_ok'] or self.resources.remaining(self.backend.graph()):
-                    raise RollbackError('State changed during watchdog handoff')
+                    raise RollbackError('State changed during watchdog handoff: '+json.dumps(verification,sort_keys=True))
                 result = dict(phase='RESTORED' if verification.get('applications_ok') else 'RESTORED_WITH_APP_LIMIT',
                               complete=True, **verification)
                 save_state(self.path, result)

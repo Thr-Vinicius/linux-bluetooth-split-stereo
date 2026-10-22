@@ -9,7 +9,9 @@ O PR continua em rascunho. A instalação habitual não usa este supervisor.
 novo de preparação. Confere originais/backups, versões de código por hash,
 watchdog/PID/InvocationID/freezer, estado de conexões já conhecido pelo watchdog,
 A2DP/AAC, null sink único/owner_module, metadata, layout estéreo e rotas próprias.
-O plano salvo não concede autorização. Se algo mudar, preparar novamente.
+O plano salvo não concede autorização. Sua [política estável](TRIAL-IDENTITY.md)
+permite IDs/níveis atuais diferentes dos históricos e os recaptura antes da troca;
+propriedades estáveis inesperadas continuam bloqueando.
 
 Após autorização, `--execute-reviewed-plan` conserva um processo proprietário
 vivo até o resultado final. Usa os mesmos `Session`, `AudioAdapter`, `OwnedGroup`
@@ -127,3 +129,11 @@ pedido, o retorno da função ou a presença do null como prova suficiente.
 Revisar [COMPARISON.md](COMPARISON.md), o [contrato de retorno](ROLLBACK.md) e o
 [diagnóstico de volume](VOLUME-ARTIFACTS.md). Não modificar codec, processamento ou
 compensação no meio da comparação e não presumir superioridade de A ou B.
+
+## Revalidação atualizada
+
+Planos schema 2 não usam índices, seriais ou níveis da preparação como identidade
+permanente. Ver [TRIAL-IDENTITY.md](TRIAL-IDENTITY.md). O vínculo operacional é feito
+com a captura final atual; depois dela, mudanças de identidade bloqueiam escritas.
+Os testes privados passaram a usar 24 s de máximo/8 s até retorno para acomodar
+as consultas adicionais; os limites reais permanecem 600 s/360 s.

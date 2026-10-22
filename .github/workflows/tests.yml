@@ -35,3 +35,4 @@ jobs:
           python tests/native-smoke.py
           python tests/rollback-native.py
           python tests/rollback-native.py --supervisor
+          python tests/rollback-native.py --supervisor --identity-rebind

@@ -251,3 +251,8 @@ restoration failures; add `--easyeffects` for real private EasyEffects.
 `tools/trial-supervisor.py --prepare` is read-only for the live session. Execution
 requires separate explicit authorization and a persistent owner; do not run a real
 trial as part of preparation.
+
+[Trial identity revalidation](docs/TRIAL-IDENTITY.md) separates stable MAC/module/
+service policy from current PipeWire IDs. New sessions can have new IDs and levels;
+the final current snapshot drives restoration, and substitutions within the window
+block writes. This affects trial infrastructure only, not regular audio processing.

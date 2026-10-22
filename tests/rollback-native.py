@@ -42,6 +42,13 @@ class Watchdog:
         return not self.frozen
 
 
+def write_fixture_audio(path):
+    # Longer than all bounded scenarios together, generated with constant memory.
+    chunk=array.array('f',[.1,-.2]*48000).tobytes()
+    with path.open('wb') as output:
+        for _ in range(300):output.write(chunk)
+
+
 def main():
     processes = []
     with tempfile.TemporaryDirectory(prefix='split-return-') as temp:
@@ -61,6 +68,14 @@ def main():
         # exercises a MONO endpoint. No Bluetooth device is used here.
         daemon = smoke.daemon_config().replace('"audio.position" = [ "MONO" ]',
                                                '"audio.position" = [ "FL" "FR" ]')
+        if '--identity-rebind' in sys.argv:
+            assert '--supervisor' in sys.argv and os.environ.get('SPLIT_TEST_MAC_TARGETS')=='1'
+            for name,mac in [(smoke.LEFT_NODE,'AA:BB:CC:DD:EE:01'),(smoke.RIGHT_NODE,'AA:BB:CC:DD:EE:02')]:
+                token='"node.name" = '+json.dumps(name)
+                extra=' '.join(json.dumps(k)+' = '+json.dumps(v) for k,v in {
+                    'api.bluez5.address':mac,'device.api':'bluez5',
+                    'api.bluez5.profile':'a2dp-sink','api.bluez5.codec':'aac'}.items())
+                daemon=daemon.replace(token,token+' '+extra)
         (runtime / 'daemon.conf').write_text(daemon)
         log = (runtime / 'log').open('w+')
         try:
@@ -79,8 +94,7 @@ def main():
                 os.environ.pop('DISPLAY',None);os.environ.pop('WAYLAND_DISPLAY',None)
                 processes.append(subprocess.Popen(['easyeffects','--hide-window'],stdout=log,stderr=log,start_new_session=True))
                 smoke.wait_for(lambda:c.snapshot().named('easyeffects_sink'),timeout=15)
-                data=array.array('f',[.1,-.2]*(48000*120))
-                (runtime/'audio.raw').write_bytes(data.tobytes())
+                write_fixture_audio(runtime/'audio.raw')
                 processes.append(subprocess.Popen(['pw-cat','--playback','--raw','--format','f32','--channels','2','--target','easyeffects_sink','--properties','{ node.name = fixture_player }',str(runtime/'audio.raw')],stdout=log,stderr=log))
                 smoke.wait_for(lambda:c.snapshot().named('ee_soe_output_level'),timeout=15)
             ee_output='ee_soe_output_level' if real_ee else 'easyeffects_sink'
@@ -108,8 +122,7 @@ def main():
                             c.command('pw-link', str(i), str(j))
 
             if '--supervisor' in sys.argv and not real_ee:
-                data=array.array('f',[.1,-.2]*(48000*120))
-                (runtime/'fixture-player.raw').write_bytes(data.tobytes())
+                write_fixture_audio(runtime/'fixture-player.raw')
                 processes.append(subprocess.Popen(['pw-cat','--playback','--raw','--format','f32','--channels','2','--target','easyeffects_sink',str(runtime/'fixture-player.raw')],stdout=log,stderr=log))
                 smoke.wait_for(lambda:bool(json.loads(c.command('pactl','-f','json','list','sink-inputs'))))
 
@@ -121,7 +134,10 @@ def main():
             cfg = dict(LEFT_DEVICE=smoke.LEFT_NODE, RIGHT_DEVICE=smoke.RIGHT_NODE,
                 VIRTUAL_SINK='split_lr', LATENCY_COMPENSATE='true', AUTO_DEFAULT='false',
                 CHECK_INTERVAL='1', ACTION_RETRY_DELAY='1', FALLBACK_SINK='',
-                TRIAL_TOKEN='return_0123456789abcdef')
+                TRIAL_TOKEN='return_0123456789abcdef',EFFECTS_OUTPUT_NAME=ee_output)
+
+            if '--identity-rebind' in sys.argv:
+                cfg.update(LEFT_MAC='AA:BB:CC:DD:EE:01',RIGHT_MAC='AA:BB:CC:DD:EE:02')
 
             def capture():
                 sinks = {s['name']: s for s in json.loads(c.command('pactl', '-f', 'json', 'list', 'sinks'))}
@@ -137,6 +153,7 @@ def main():
 
             scenarios=(['requested','deadline','candidate-failure','swap-failure','return-failure','readiness-timeout','cancelled','requester-exit','signal','command-timeout','return-persistent-failure']
                        if '--supervisor' in sys.argv else ['normal','partial-startup','no-sink'])
+            if '--identity-rebind' in sys.argv:scenarios=['requested']
             if os.environ.get('SPLIT_E2E_SCENARIO'):scenarios=[os.environ['SPLIT_E2E_SCENARIO']]
             for scenario in scenarios:
                 c.command('pactl', 'load-module', 'module-null-sink', argument)
@@ -163,7 +180,49 @@ def main():
                 before = capture()
                 if '--supervisor' in sys.argv:
                     import session_native
-                    session_native.run(runtime,cfg,scenario,c,independent,ee_output)
+                    historical=None
+                    if '--identity-rebind' in sys.argv:
+                        sys.path.insert(0,str(ROOT/'tools'))
+                        from trial_identity import identify
+                        mods=[(line.split('\t')[0],line.split('\t')[2]) for line in c.command('pactl','list','short','modules').splitlines() if '\tmodule-null-sink\tsink_name=split_lr ' in line]
+                        historical=dict(before,identity=identify(cfg,list(before['sinks'].values()),c.snapshot(),mods))
+                        # Recreate only PRIVATE objects to obtain genuinely new
+                        # Pulse/graph IDs, preserving addresses and properties.
+                        for side in ('LEFT','RIGHT'):
+                            name=cfg[side+'_DEVICE'];node=c.snapshot().named(name)[0]
+                            c.command('pw-cli','destroy',str(node))
+                            smoke.wait_for(lambda name=name:not c.snapshot().named(name))
+                            props='api.bluez5.address='+cfg[side+'_MAC']+' device.api=bluez5 api.bluez5.profile=a2dp-sink api.bluez5.codec=aac'
+                            c.command('pactl','load-module','module-null-sink','sink_name='+name+' channels=2 channel_map=front-left,front-right sink_properties="'+props+'"')
+                            smoke.wait_for(lambda name=name:port_ready(name))
+                        c.command('pactl','unload-module',mods[0][0])
+                        smoke.wait_for(lambda:not c.snapshot().named('split_lr'))
+                        c.command('pactl','load-module','module-null-sink',argument)
+                        smoke.wait_for(lambda:port_ready('split_lr'))
+                        for side,channel in [('LEFT','FL'),('RIGHT','FR')]:
+                            graph=c.snapshot()
+                            source=next(i for i,p in graph.ports_for(graph.named('split_lr')[0],'out').items() if p['audio.channel']==channel)
+                            for target in graph.ports_for(graph.named(cfg[side+'_DEVICE'])[0],'in'):c.command('pw-link',str(source),str(target))
+                        graph=c.snapshot()
+                        for link,a,b,_ in graph.links:
+                            if graph.nodes[int(graph.ports[a]['node.id'])]['node.name']==ee_output:c.command('pw-link','-d',str(link))
+                        connect(ee_output,'split_lr')
+                        for name,value in [(cfg['LEFT_DEVICE'],'42%'),(cfg['RIGHT_DEVICE'],'58%'),('split_lr','31%'),('easyeffects_sink','22%')]:
+                            c.command('pactl','set-sink-volume',name,value)
+                        c.command('pactl','set-sink-mute',cfg['LEFT_DEVICE'],'0')
+                        c.command('pactl','set-sink-mute',cfg['RIGHT_DEVICE'],'1')
+                        c.command('pactl','set-default-sink','split_lr')
+                        # Fixture policy may follow the new default. Re-establish
+                        # the known test source -> EE condition before validation.
+                        live={str(i['properties'].get('object.serial')):i for i in json.loads(c.command('pactl','-f','json','list','sink-inputs'))}
+                        for saved in before['inputs']:
+                            item=live.get(str(saved['properties'].get('object.serial')))
+                            if item and saved['restore_sink']=='easyeffects_sink':
+                                c.command('pactl','move-sink-input',str(item['index']),'easyeffects_sink')
+                        smoke.wait_for(lambda:len([e for e in t.edges(c.snapshot()) if e[2]=='split_lr'])==2)
+
+                    session_native.run(runtime,cfg,scenario,c,independent,ee_output,historical)
+
                     restored=[line.split('\t')[0] for line in c.command('pactl','list','short','modules').splitlines() if '\tmodule-null-sink\tsink_name=split_lr ' in line]
                     assert len(restored)==1
                     c.command('pactl','unload-module',restored[0])
