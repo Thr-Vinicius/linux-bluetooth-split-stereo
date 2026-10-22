@@ -177,11 +177,14 @@ def main():
                 c.command('pactl','set-default-sink','split_lr')
                 smoke.wait_for(lambda:c.snapshot().named(ee_output))
                 # Policy may already have connected these ports.
-                graph=c.snapshot()
-                for i,a,b,_ in list(graph.links):
-                    if graph.nodes[int(graph.ports[a]['node.id'])]['node.name']==ee_output:
-                        c.command('pw-link','-d',str(i))
-                connect(ee_output,'split_lr')
+                if '--effects-lifecycle' not in sys.argv:
+                    graph=c.snapshot()
+                    for i,a,b,_ in list(graph.links):
+                        if graph.nodes[int(graph.ports[a]['node.id'])]['node.name']==ee_output:
+                            c.command('pw-link','-d',str(i))
+                    connect(ee_output,'split_lr')
+                # Lifecycle tests must let EE create AND remove its own links.
+                # A manual paused pair after teardown is not EE-owned lifecycle.
                 for name, value in [(cfg['LEFT_DEVICE'], '25%'), (cfg['RIGHT_DEVICE'], '35%'),
                                     ('split_lr', '20%'), ('easyeffects_sink', '30%')]:
                     c.command('pactl', 'set-sink-volume', name, value)
