@@ -29,6 +29,16 @@ def run(runtime,cfg,scenario,c,independent,ee_output,historical=None):
     proc=subprocess.Popen([sys.executable,str(ROOT/'tests/session_worker.py'),str(session)],stdout=log,stderr=log,start_new_session=True)
     try:
         armed=wait(session/'state.json','ARMED')
+        if scenario in ('idle-late-start','idle-return'):
+            before=json.loads((session/'before.json').read_text())
+            assert before['effects']['state']=='IDLE_UNPROVEN'
+            import effects_native
+            late=effects_native.start_player(runtime,log)
+            try:
+                effects_native.wait_active(cfg,c)
+            except Exception:
+                late.terminate();late.wait();raise
+        else:late=None
         if scenario=='cancelled':
             (session/'return.request').touch()
         else:
@@ -52,11 +62,16 @@ def run(runtime,cfg,scenario,c,independent,ee_output,historical=None):
                     streams=[i for i in inputs if i['properties'].get('node.name')=='aba_fixture_player']
                     assert len(streams)==1 and not streams[0]['corked'],streams
                     (session/'playback.json').write_text(json.dumps(streams,indent=2)+'\n')
-                    if not external and scenario in ('requested','return-failure','return-persistent-failure','requester-exit'):
+                    if scenario=='idle-return':
+                        player.terminate();player.wait(timeout=3)
+                        if late is not None:late.terminate();late.wait(timeout=3)
+                        import effects_native
+                        effects_native.wait_idle(cfg,c)
+                    if not external and scenario in ('requested','return-failure','return-persistent-failure','requester-exit','idle-late-start','idle-return'):
                         subprocess.run([sys.executable,str(ROOT/'tools/request-return.py'),'--session',str(session)],check=True,stdout=log)
                     if scenario=='signal':proc.send_signal(15)
                     proc.wait(timeout=30)
-                    assert player.poll() is None, 'Fixture PCM ended before final verification'
+                    if scenario!='idle-return':assert player.poll() is None, 'Fixture PCM ended before final verification'
                 finally:
                     player.terminate();player.wait(timeout=3)
         proc.wait(timeout=30)
@@ -75,6 +90,15 @@ def run(runtime,cfg,scenario,c,independent,ee_output,historical=None):
         if scenario=='return-failure':assert result['attempts']==2,result
         if scenario=='deadline':assert result['reason']=='deadline' and result['elapsed']>=8,result
         if scenario in ('swap-failure','readiness-timeout','candidate-failure','command-timeout'):assert result['reason']=='failure',result
+        if scenario=='idle-return':
+            assert not any(e[2]==cfg['VIRTUAL_SINK'] for e in __import__('trial_support').edges(c.snapshot()))
+            commands=[json.loads(line)['args'] for line in (session/'commands.jsonl').read_text().splitlines() if 'args' in json.loads(line)]
+            assert not any(a[:2]==['pactl','move-sink-input'] for a in commands)
+        if scenario=='idle-late-start':
+            current=json.loads((session/'before.json').read_text())
+            assert current['effects']['state']=='ACTIVE_VERIFIED' and current['inputs']
+            assert all(i['same_stream'] and i['state_matches'] for i in result['applications'])
+            assert len(result['applications'])>=2, result
         if historical is not None:
             current=json.loads((session/'before.json').read_text())
             assert current['identity']['stable']==historical['identity']['stable']
@@ -96,6 +120,8 @@ def run(runtime,cfg,scenario,c,independent,ee_output,historical=None):
             print((session/'worker.log').read_text())
             for name in ('state.json','events.jsonl','candidate.log'):
                 if (session/name).exists():print(name,(session/name).read_text())
+        if 'late' in locals() and late is not None:
+            late.terminate();late.wait(timeout=3)
         if proc.poll() is None:
             proc.terminate()
             try:proc.wait(timeout=30)

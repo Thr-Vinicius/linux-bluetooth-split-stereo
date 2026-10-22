@@ -119,3 +119,7 @@ Não excluir partidas ruins ou falhas. Reportar contagens, duração e todas as
 ocorrências; amostra pequena continua exploratória. Reconexões manuais exigem
 escopo e autorização separados. Captura acústica sincronizada também exige
 preparação própria. Nenhuma arquitetura é declarada superior nesta preparação.
+
+## Preparação com EasyEffects ocioso
+
+A preparação pode registrar IDLE_UNPROVEN quando não há reprodução efetiva e os links estão completamente ausentes. Isso não aprova roteamento ou processamento ainda não demonstrados. Antes da troca, o usuário inicia A pelo caminho normal; exigir ACTIVE_VERIFIED na captura final antes de qualquer freeze. Não criar ligações para satisfazer o preflight. Se A continuar ociosa ou o caminho estiver errado/incompleto, encerrar sem intervenção. Ver [revalidação](TRIAL-EASYEFFECTS.md).

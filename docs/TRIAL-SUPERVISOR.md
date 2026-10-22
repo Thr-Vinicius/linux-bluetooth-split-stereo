@@ -132,8 +132,12 @@ compensação no meio da comparação e não presumir superioridade de A ou B.
 
 ## Revalidação atualizada
 
-Planos schema 2 não usam índices, seriais ou níveis da preparação como identidade
+Planos schema 3 não usam índices, seriais ou níveis da preparação como identidade
 permanente. Ver [TRIAL-IDENTITY.md](TRIAL-IDENTITY.md). O vínculo operacional é feito
 com a captura final atual; depois dela, mudanças de identidade bloqueiam escritas.
 Os testes privados passaram a usar 24 s de máximo/8 s até retorno para acomodar
 as consultas adicionais; os limites reais permanecem 600 s/360 s.
+
+## Preparação ociosa e gate de intervenção
+
+O preflight distingue IDLE_UNPROVEN de ACTIVE_VERIFIED; ver [EasyEffects](TRIAL-EASYEFFECTS.md). Um plano ocioso não demonstra prontidão de reprodução. Depois de ARMED e de o usuário iniciar A, a captura final deve confirmar atividade e todo o caminho antes do freeze. Se isso falhar, ABORTED_UNCHANGED encerra sem tentar rollback de uma intervenção que não ocorreu. Prazos e necessidade de autorização específica permanecem.

@@ -15,7 +15,7 @@ que uma nova janela deve restaurar. As evidências anteriores permanecem intacta
 
 ## Política estável
 
-O plano versão 2 identifica cada lado por MAC e verifica concordância entre
+O plano versão 3 identifica cada lado por MAC e verifica concordância entre
 Pulse e PipeWire: device.api, classe de mídia, endereço, perfil, codec e factory.
 A preparação real exige BlueZ A2DP/AAC e factory nativa correspondente; nomes
 simulados só existem nos servidores privados de teste. Um nome esperado contendo
@@ -80,7 +80,7 @@ python3 tools/trial-supervisor.py --prepare --session /DIRETORIO/NOVO \
 O histórico é opcional; se fornecido, suas restrições estáveis são verificadas.
 Índices/seriais, volumes/mute e detalhes de rotas anteriores ficam apenas no log
 de diferenças. O executor também compara a captura feita na preparação com a
-captura final da janela. Planos antigos sem schema 2 devem ser regenerados, pois
+captura final da janela. Planos antigos sem schema 3 devem ser regenerados, pois
 não contêm a política estável; não se tenta reinterpretá-los silenciosamente.
 
 Mantêm-se os limites do [supervisor](TRIAL-SUPERVISOR.md): máximo de 600 s desde
@@ -107,3 +107,7 @@ reduzida do fixture é 24 s e o retorno automático aos 8 s; isso dá margem às
 repetidas, sem alterar os 600/360 s da operação real. Systemd/BlueZ e acústica reais
 continuam fora desses testes. O manager privado não pode iniciar no cgroup somente
 de leitura; o watchdog de teste usa SIGSTOP/SIGCONT em processo privado.
+
+## Ociosidade do EasyEffects
+
+A ausência total de links pode ser IDLE_UNPROVEN e permite apenas preparação condicional. Reprodução efetiva exige ACTIVE_VERIFIED com cadeia de processamento própria e saída estéreo correta. A intervenção exige esse estado em nova captura imediatamente antes do freeze. Ver [critério completo](TRIAL-EASYEFFECTS.md). Não reconstruir links históricos no retorno quando a captura atual comprova ociosidade.

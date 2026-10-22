@@ -90,6 +90,10 @@ def main():
                 for o in c.snapshot().objects.values()))
             real_ee='--easyeffects' in sys.argv
             if real_ee:
+                if '--effects-lifecycle' in sys.argv:
+                    settings=runtime/'config/easyeffects/db/easyeffectsrc'
+                    settings.parent.mkdir(parents=True,exist_ok=True)
+                    settings.write_text('[EffectsPipelines]\ninactivityTimerEnable=true\ninactivityTimeout=1\n')
                 os.environ.update(QT_QPA_PLATFORM='offscreen',QT_QUICK_BACKEND='software',GTK_USE_PORTAL='0',QT_NO_XDG_DESKTOP_PORTAL='1')
                 os.environ.pop('DISPLAY',None);os.environ.pop('WAYLAND_DISPLAY',None)
                 processes.append(subprocess.Popen(['easyeffects','--hide-window'],stdout=log,stderr=log,start_new_session=True))
@@ -119,7 +123,10 @@ def main():
                 for i, p in a.items():
                     for j, q in b.items():
                         if p.get('audio.channel') == q.get('audio.channel'):
-                            c.command('pw-link', str(i), str(j))
+                            if any(a==i and b==j for _,a,b,_ in c.snapshot().links):continue
+                            try:c.command('pw-link', str(i), str(j))
+                            except c.SplitError:
+                                if not any(a==i and b==j for _,a,b,_ in c.snapshot().links):raise
 
             if '--supervisor' in sys.argv and not real_ee:
                 write_fixture_audio(runtime/'fixture-player.raw')
@@ -154,6 +161,9 @@ def main():
             scenarios=(['requested','deadline','candidate-failure','swap-failure','return-failure','readiness-timeout','cancelled','requester-exit','signal','command-timeout','return-persistent-failure']
                        if '--supervisor' in sys.argv else ['normal','partial-startup','no-sink'])
             if '--identity-rebind' in sys.argv:scenarios=['requested']
+            if '--effects-lifecycle' in sys.argv:
+                assert real_ee and '--supervisor' in sys.argv
+                scenarios=['idle-late-start','idle-return']
             if os.environ.get('SPLIT_E2E_SCENARIO'):scenarios=[os.environ['SPLIT_E2E_SCENARIO']]
             for scenario in scenarios:
                 c.command('pactl', 'load-module', 'module-null-sink', argument)
@@ -178,6 +188,9 @@ def main():
                 c.command('pactl', 'set-sink-mute', cfg['LEFT_DEVICE'], '1')
                 c.command('pactl', 'set-default-sink', 'split_lr')
                 before = capture()
+                if '--effects-lifecycle' in sys.argv:
+                    import effects_native
+                    effects_native.check(runtime,cfg,c,smoke,processes,log,scenario)
                 if '--supervisor' in sys.argv:
                     import session_native
                     historical=None
@@ -219,7 +232,10 @@ def main():
                             item=live.get(str(saved['properties'].get('object.serial')))
                             if item and saved['restore_sink']=='easyeffects_sink':
                                 c.command('pactl','move-sink-input',str(item['index']),'easyeffects_sink')
-                        smoke.wait_for(lambda:len([e for e in t.edges(c.snapshot()) if e[2]=='split_lr'])==2)
+                        try:smoke.wait_for(lambda:len([e for e in t.edges(c.snapshot()) if e[2]=='split_lr'])==2)
+                        except Exception:
+                            print('Rebind setup links:',sorted(t.edges(c.snapshot())),flush=True)
+                            raise
 
                     session_native.run(runtime,cfg,scenario,c,independent,ee_output,historical)
 

@@ -12,6 +12,7 @@ import sys
 import time
 
 from trial_identity import identify, check_window, audit_difference, stamp, unique_node
+from trial_effects import classify as effects_classify, witness as effects_witness, EffectsPending
 
 from trial_support import (OwnedGroup, Resources, ReturnSupervisor, PulseRestore,
                            WatchdogLease, RollbackError, context_identity,
@@ -152,6 +153,11 @@ class Session:
                     time.sleep(.2)
         except Exception as exc:
             failure = str(exc)
+            if getattr(self.adapter, 'intervention_started', True) is False:
+                result=dict(phase='ABORTED_UNCHANGED', complete=True, audio_changed=False, error=failure)
+                save_state(self.path,result)
+                self.event_result(result)
+                return result
             self.reason='failure'
             self.event('TRIAL_FAILED', error=failure)
         # Always owned here, even if no candidate was spawned or swap failed.
@@ -210,6 +216,7 @@ class AudioAdapter:
         self.restored_module = None
         self.restored_stamp = None
         self.history = None
+        self.intervention_started = False
 
     def run(self, *args):
         if self.deadline is not None and time.monotonic() >= self.deadline:
@@ -338,6 +345,17 @@ class AudioAdapter:
         return c.Graph(json.loads(self.run('pw-dump')))
 
     def capture(self):
+        # Never interpret a torn Pulse/graph snapshot as idle. Retry readings
+        # only; an unsettled graph fails closed without creating any links.
+        for attempt in range(3):
+            try:
+                return self.capture_once()
+            except RollbackError as exc:
+                if not isinstance(exc,EffectsPending) and 'recapture required' not in str(exc) and 'disappeared' not in str(exc):raise
+                if attempt==2:raise
+                time.sleep(.05)
+
+    def capture_once(self):
         raw=json.loads(self.run('pactl','-f','json','list','sinks'))
         graph=self.graph()
         identity=identify(self.cfg,raw,graph,self.null_modules(),self.expected_policy)
@@ -345,6 +363,10 @@ class AudioAdapter:
         sinks={s['name']:s for s in raw}
         names={s['index']:n for n,s in sinks.items()}
         inputs=json.loads(self.run('pactl','-f','json','list','sink-inputs'))
+        graph_after=self.graph()
+        inputs_after=json.loads(self.run('pactl','-f','json','list','sink-inputs'))
+        if effects_witness(self.cfg,graph,inputs)!=effects_witness(self.cfg,graph_after,inputs_after):
+            raise RollbackError('Playback topology changed during capture; recapture required')
         for item in inputs:
             item['restore_sink']=names.get(item['sink'])
         wanted=[self.cfg['LEFT_DEVICE'],self.cfg['RIGHT_DEVICE'],self.cfg['VIRTUAL_SINK'],self.cfg.get('EFFECTS_SINK','easyeffects_sink')]
@@ -355,7 +377,8 @@ class AudioAdapter:
             node,props=unique_node(graph,name)
             routes[name]=stamp(sinks[name],node,props)
         return dict(sinks={n:sinks[n] for n in wanted},inputs=inputs,
-                    edges=sorted(edges(self.graph())),default=default,route_targets=routes,
+                    edges=sorted(edges(graph)),default=default,route_targets=routes,
+                    effects=effects_classify(self.cfg,graph,inputs),
                     hashes=self.hashes,identity=identity)
 
     def preflight(self):
@@ -390,9 +413,8 @@ class AudioAdapter:
         # Require exact old split channel fan-out, not an arbitrary named sink.
         graph=self.graph()
         c.require_metadata(graph)
-        incoming=[e for e in self.before['edges'] if e[2]==virtual]
-        if len(incoming)!=2 or any(e[0]!=self.cfg.get('EFFECTS_OUTPUT_NAME','ee_soe_output_level') for e in incoming):
-            raise RollbackError('Expected exclusive stereo EasyEffects input route')
+        # IDLE can be prepared, but cannot authorize a real swap. capture()
+        # validates every existing route and requires the full path if active.
         expected=set()
         for side,channel in [('LEFT','FL'),('RIGHT','FR')]:
             sources=[(n,p) for n,p in graph.ports.items() if graph.nodes[int(p['node.id'])].get('node.name')==virtual and p.get('port.direction')=='out' and p.get('audio.channel')==channel]
@@ -416,6 +438,14 @@ class AudioAdapter:
 
     def freeze(self):
         self.assert_identity()
+        current=self.capture()
+        if (current['identity']['current']!=self.identity['current'] or
+                not current['effects']['playback_ready'] or
+                current['edges']!=self.before['edges'] or
+                {(i['properties'].get('object.serial'),i['restore_sink'],i['corked']) for i in current['inputs']}!=
+                {(i['properties'].get('object.serial'),i['restore_sink'],i['corked']) for i in self.before['inputs']}):
+            raise RollbackError('Playback path is idle or changed before intervention; recapture required')
+        self.intervention_started=True
         self.watchdog.freeze()
         self.assert_identity()
         self.backend.mute()
@@ -490,11 +520,16 @@ class AudioAdapter:
             saved=previous.get(str(item['properties'].get('object.serial')))
             if saved and saved['restore_sink']==self.cfg['VIRTUAL_SINK']:
                 item['restore_sink']=self.cfg['VIRTUAL_SINK']
-        rows=sorted(edges(self.graph()))
+        graph=self.graph()
+        rows=sorted(edges(graph))
         # If candidate vanished, recover only the previously identified EE ports;
         # do not turn a spontaneous fallback destination into the desired route.
         virtual=self.cfg['VIRTUAL_SINK']
-        if not any(e[2]==virtual for e in rows):
+        if graph.named(virtual):
+            effects_classify(self.cfg,graph,inputs)
+        elif any(not i['corked'] and not i['properties'].get('split.owner') for i in inputs):
+            # Candidate failure: only the previously captured, owner-verified
+            # EE ports may be recovered. Idle return never invents old links.
             rows += [e for e in self.before['edges'] if e[2]==virtual]
         self.backend.playback=dict(inputs=inputs,edges=rows)
         self.backend.media_before=self.media()
@@ -506,9 +541,26 @@ class AudioAdapter:
         names=json.loads(self.run(*prefix,'call','org.freedesktop.DBus','/org/freedesktop/DBus','org.freedesktop.DBus','ListNames'))['data'][0]
         return {name:json.loads(self.run(*prefix,'get-property',name,'/org/mpris/MediaPlayer2','org.mpris.MediaPlayer2.Player','PlaybackStatus'))['data'] for name in names if name.startswith('org.mpris.MediaPlayer2.')}
 
+    def read_effects(self):
+        # EE rebuilds asynchronously on a newly active stream. Allow a short,
+        # bounded read-only settling interval, never a wrong/foreign route.
+        until=time.monotonic()+1.25
+        while True:
+            try:return self.read_effects_once()
+            except EffectsPending:
+                if time.monotonic()>=until:raise
+                time.sleep(.1)
+
+    def read_effects_once(self):
+        raw=json.loads(self.run('pactl','-f','json','list','sinks'))
+        names={s['index']:s['name'] for s in raw}
+        inputs=json.loads(self.run('pactl','-f','json','list','sink-inputs'))
+        for item in inputs:item['restore_sink']=names.get(item['sink'])
+        return effects_classify(self.cfg,self.graph(),inputs)
+
     def observe(self,path):
         with (path/'observations.jsonl').open('a') as output:
-            output.write(json.dumps(dict(monotonic=time.monotonic(),routed=self.ready()))+'\n')
+            output.write(json.dumps(dict(monotonic=time.monotonic(),routed=self.ready(),effects=self.read_effects()))+'\n')
 
 
 class ServiceWatchdog(WatchdogLease):

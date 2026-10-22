@@ -31,8 +31,9 @@ def fixture(seed=0, volume=1000, mute=False):
             dict(dict(zip(ident.BT_KEYS,('bluez5','Audio/Sink',mac,'a2dp-sink','aac'))),**{'factory.name':'api.bluez5.a2dp.sink'}))
     module=str(900+seed)
     add('split_lr',30+seed,{'pulse.module.id':module,'factory.name':'support.null-audio-sink','media.class':'Audio/Sink'},int(module))
-    add('easyeffects_sink',40+seed,{'factory.name':'support.null-audio-sink','media.class':'Audio/Sink','application.id':'com.github.wwmm.easyeffects'})
-    objects.append({'id':5000+seed,'type':'PipeWire:Interface:Node','info':{'props':{'node.name':'ee_soe_output_level','object.serial':str(5000+seed)}}})
+    add('easyeffects_sink',40+seed,{'factory.name':'support.null-audio-sink','media.class':'Audio/Sink','application.id':'com.github.wwmm.easyeffects','client.id':6000})
+    objects.append({'id':5000+seed,'type':'PipeWire:Interface:Node','info':{'props':{'node.name':'ee_soe_output_level','object.serial':str(5000+seed),'application.id':'com.github.wwmm.easyeffects','client.id':6000}}})
+    objects.append({'id':6000,'type':'PipeWire:Interface:Client','info':{'props':{'object.serial':'6000','application.name':'easyeffects','application.process.binary':'easyeffects'}}})
     return cfg,sinks,s.c.Graph(objects),[(module,ARG)]
 
 

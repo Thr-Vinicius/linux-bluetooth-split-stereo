@@ -22,7 +22,7 @@ jobs:
     container: archlinux:base
     steps:
       - name: Install native test tools
-        run: pacman -Syu --noconfirm python pipewire pipewire-pulse wireplumber libpulse dbus git
+        run: pacman -Syu --noconfirm python pipewire pipewire-pulse wireplumber libpulse dbus git easyeffects
       - uses: actions/checkout@v4
       - name: Private PipeWire and WirePlumber integration
         env:
@@ -36,3 +36,5 @@ jobs:
           python tests/rollback-native.py
           python tests/rollback-native.py --supervisor
           python tests/rollback-native.py --supervisor --identity-rebind
+          python tests/rollback-native.py --supervisor --easyeffects
+          python tests/rollback-native.py --supervisor --easyeffects --effects-lifecycle

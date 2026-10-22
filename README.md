@@ -256,3 +256,5 @@ trial as part of preparation.
 service policy from current PipeWire IDs. New sessions can have new IDs and levels;
 the final current snapshot drives restoration, and substitutions within the window
 block writes. This affects trial infrastructure only, not regular audio processing.
+
+A preparação A–B–A distingue ociosidade legítima do EasyEffects de falha durante áudio ativo: [critérios e retorno dinâmico](docs/TRIAL-EASYEFFECTS.md). Um plano ocioso não autoriza intervenção.

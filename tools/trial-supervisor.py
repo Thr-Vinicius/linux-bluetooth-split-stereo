@@ -25,7 +25,7 @@ def sha(path):
 
 def code_hashes():
     paths=[ROOT/'bluetooth-split-controller.py',ROOT/'tools/trial-supervisor.py',
-           ROOT/'tools/trial_session.py',ROOT/'tools/trial_support.py',ROOT/'tools/trial_identity.py']
+           ROOT/'tools/trial_session.py',ROOT/'tools/trial_support.py',ROOT/'tools/trial_identity.py',ROOT/'tools/trial_effects.py']
     return {str(p):sha(p) for p in paths}
 
 
@@ -66,11 +66,11 @@ def prepare(args):
             raise RuntimeError('Expected A2DP/AAC endpoints')
         if 'Connected: yes' not in c.command('bluetoothctl','info',cfg[side+'_MAC']):
             raise RuntimeError('Bluetooth endpoint not connected')
-    plan=dict(schema=2,stable_identity=adapter.identity['stable'],
+    plan=dict(schema=3,effects_at_preparation=adapter.before['effects'],stable_identity=adapter.identity['stable'],
               watchdog_identity={k:lease.saved[k] for k in ('Id','ExecPath','MainCommandLine')},
               cfg=cfg,hashes=values,code_hashes=code_hashes(),service_prefix=prefix,
               service_saved=lease.saved,request_flag=str(flag),sync_file=str(sync),
-              sync_indexes=indexes,maximum=600,return_after=360,ready_timeout=30,
+              sync_indexes=indexes,maximum=600,return_after=360,ready_timeout=30,intervention_requires_active_effects=True,
               original_module=adapter.old_module,physical_signature=adapter.backend.signature(adapter.before['sinks']))
     plan['cfg']=adapter.cfg
     if args.history:
@@ -78,14 +78,15 @@ def prepare(args):
         (path/'historical-differences.json').write_text(json.dumps(audit_difference(historical,adapter.before),indent=2)+'\n')
     (path/'plan.json').write_text(json.dumps(plan,indent=2)+'\n')
     (path/'prepared-before.json').write_text(json.dumps(adapter.before,indent=2)+'\n')
-    save_state(path,dict(phase='PREPARED_NOT_AUTHORIZED',complete=False,audio_changed=False))
+    save_state(path,dict(phase='PREPARED_NOT_AUTHORIZED',complete=False,audio_changed=False,playback_ready=adapter.before['effects']['playback_ready']))
+    print('Effects state: '+adapter.before['effects']['state']+'; active verified path required before freeze.')
     print('Read-only preparation complete. No authorization granted. '+str(path))
 
 
 def execute(path):
     path=private_directory(path.resolve())
     plan=json.loads((path/'plan.json').read_text())
-    if plan.get('schema')!=2:raise RuntimeError('Old plan schema: prepare a new current-identity plan')
+    if plan.get('schema')!=3:raise RuntimeError('Old plan schema: prepare a new current-identity plan')
     if (path/'events.jsonl').exists():raise RuntimeError('Session already used; prepare a new one')
     if code_hashes()!=plan['code_hashes']:raise RuntimeError('Candidate code changed after preparation')
     for p,h in plan['hashes'].items():

@@ -101,7 +101,9 @@ def identify(cfg, raw_sinks, graph, modules, expected=None):
                              factory=props.get('factory.name'), media_class=props.get('media.class'))
     output_name = cfg.get('EFFECTS_OUTPUT_NAME', 'ee_soe_output_level')
     output, props = unique_node(graph, output_name)
-    current['effects_output'] = dict(node_id=output, serial=str(props['object.serial']), name=output_name)
+    from trial_effects import effects_owner, output_stamp
+    effects_owner(cfg, graph)
+    current['effects_output'] = output_stamp(graph,output,props)
     # Pin relevant physical and EE ports for this window too.
     ids = {current[s]['node_id'] for s in ('LEFT', 'RIGHT', 'effects', 'effects_output')}
     current['ports'] = sorted((i, str(p['object.serial']), str(p.get('node.id')), p.get('port.name'), p.get('port.direction'), p.get('audio.channel')) for i, p in graph.ports.items()
@@ -130,6 +132,8 @@ def check_window(cfg, raw_sinks, graph, identity):
     if len(set(names)) != len(names):
         raise RollbackError('Ambiguous sinks during intervention')
     sinks = {s['name']: s for s in raw_sinks}
+    from trial_effects import effects_owner, output_stamp
+    effects_owner(cfg, graph)
     pinned = identity['current']
     for side in ('LEFT', 'RIGHT', 'effects'):
         saved = pinned[side]
@@ -156,7 +160,7 @@ def check_window(cfg, raw_sinks, graph, identity):
                     raise RollbackError('Bluetooth properties changed during intervention')
     saved=pinned['effects_output']
     node,props=unique_node(graph,saved['name'])
-    if dict(node_id=node,serial=str(props['object.serial']),name=saved['name'])!=saved:
+    if output_stamp(graph,node,props)!=saved:
         raise RollbackError('EasyEffects output identity changed')
     ids={pinned[s]['node_id'] for s in ('LEFT','RIGHT','effects','effects_output')}
     ports=sorted((i,str(p['object.serial']),str(p.get('node.id')),p.get('port.name'),p.get('port.direction'),p.get('audio.channel')) for i,p in graph.ports.items() if int(p.get('node.id',-1)) in ids)
